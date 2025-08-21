@@ -1,0 +1,65 @@
+local Promocodes = {}
+
+Promocodes.Codes = {
+	["TNFONTOP123"] = {
+		PromoCodeMessage = "Succesfully claimed promocode",
+		Reward = {
+			["pounds"] = 350,
+			["items"] = {
+				["Bread"] = 5,
+			}
+		}
+	},
+}
+
+Promocodes.ClaimPromocode = function(player,PromocodeToCheck)
+	
+	if  not PromocodeToCheck then
+		player:Kick("incorrect data packet sent to server")
+		return 
+	end
+	
+	if  typeof(PromocodeToCheck)~="string" then
+		player:Kick("incorrect data packet sent to server")
+		return 
+	end
+	
+	if not Promocodes.Codes[PromocodeToCheck] then
+		_G.client.sendToClient(player,"newHint","promocode doesnt exist")
+		--// promocode doesnt exist!!
+		return
+	end
+	
+	if player.Status.Promocodes:FindFirstChild(PromocodeToCheck) then
+		_G.client.sendToClient(player,"newHint","promocode already claimed")
+		return --// promocode already claimed
+	end
+	if Promocodes.Codes[PromocodeToCheck] then
+		local PromoCodeData = Promocodes.Codes[PromocodeToCheck]
+		
+		local ClaimedPromoCode = Instance.new("BoolValue")
+		ClaimedPromoCode.Name = PromocodeToCheck
+		ClaimedPromoCode.Value = true
+		ClaimedPromoCode.Parent = player.Status.Promocodes
+		
+		_G.client.sendToClient(player,"newHint",PromoCodeData.PromoCodeMessage)
+
+		if PromoCodeData.Reward.pounds then
+			player.Status.Pounds.Value = player.Status.Pounds.Value+PromoCodeData.Reward.pounds
+		end
+		
+		if PromoCodeData.Reward.items then
+			
+
+			if PromoCodeData.Reward.items then
+				for i, v in pairs(PromoCodeData.Reward.items) do
+					for j = 1, v do
+						_G.item.add(player, i)
+					end
+				end
+			end
+		end
+	end
+end
+	
+return Promocodes
