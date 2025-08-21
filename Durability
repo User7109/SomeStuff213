@@ -1,0 +1,19 @@
+local module = {}
+local stats = require(script.Parent:FindFirstChild("Stats"))
+
+function module.new(...)
+	local tbl = {...}
+	if module[tbl[1].Name] then return end
+	module[tbl[1].Name] = {}
+end
+
+function tooluse(Tool, User : Player)
+	local userTbl = module[User.Name]
+	local durability = userTbl[Tool]
+	durability -= 1
+	if durability <= 0 then
+		
+	end
+end
+
+return module
