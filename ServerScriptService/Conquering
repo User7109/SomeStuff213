@@ -1,0 +1,336 @@
+local conquering = {}
+
+local noCacheOption = Instance.new("DataStoreGetOptions")
+noCacheOption.UseCache = false
+
+game:GetService("TeleportService").TeleportInitFailed:Connect(function(player)
+	--> reset the teleporting value if the teleport failed
+	player.Status.TeleportingPlace.Value = 0
+end)
+
+local function getIslandData(islandDataStore, key, noCache)
+	local returnedData
+
+	repeat
+		local success, err = pcall(function()
+			returnedData = islandDataStore:GetAsync(key, noCache and noCacheOption)
+		end)
+
+		if not success then
+			warn(err)
+			task.wait(1)
+		end
+	until success
+
+	return returnedData
+end
+
+local function setIslandData(islandDataStore, key, value)
+	repeat
+		local success, err = pcall(function()
+			if value then
+				islandDataStore:SetAsync(key, value)
+			else
+				islandDataStore:RemoveAsync(key)
+			end
+		end)
+
+		if not success then
+			warn(err)
+			task.wait(1)
+		end
+	until success
+end
+
+conquering.start = function()
+	if _G.stats.places[game.PlaceId].conquering then
+		local islandDataStore = _G.dataStoreService:GetDataStore("TNFIslands1", tostring(game.PlaceId))
+		local serverID = getIslandData(islandDataStore, "serverID", true)
+
+		if serverID and serverID ~= game.JobId then
+			conquering.resetServer()
+			return
+		end
+	end
+
+	conquering.watchIslands()
+	conquering.watchFlag()
+end
+
+conquering.watchIslands = function()
+	local listenedToPlayersChanged, errListeningToPlayersChanged = pcall(function()
+		_G.MessagingService:SubscribeAsync("IslandPlayersChanged", function(message)
+			print("island changed")
+			local folder = _G.storage.Islands:FindFirstChild(message.Data.islandId)
+
+			if folder then
+				_G.storage.Islands:FindFirstChild(message.Data.islandId).PlayerAmount.Value = message.Data.playerAmount
+			end
+		end)
+	end)
+
+	local listenedToFactionChanged, errListeningToFactionsChanged = pcall(function()
+		_G.MessagingService:SubscribeAsync("IslandFactionChanged", function(message)
+			print("faction changed")
+			local folder = _G.storage.Islands:FindFirstChild(message.Data.islandId)
+
+			if folder then
+				_G.storage.Islands:FindFirstChild(message.Data.islandId).Faction.Value = message.Data.faction
+			end
+		end)
+	end)
+
+	for i, v in pairs(_G.stats.places) do
+		if v.conquering then
+			local islandFolder = Instance.new("Folder")
+			islandFolder.Name = i
+
+			Instance.new("IntValue", islandFolder).Name = "Faction"
+			Instance.new("IntValue", islandFolder).Name = "PlayerAmount"
+			Instance.new("StringValue", islandFolder).Name = "AccessCode"
+
+			islandFolder.Parent = _G.storage.Islands
+
+			local islandDataStore = _G.dataStoreService:GetDataStore("TNFIslands1", tostring(i))
+
+			local reservedAccessCode = getIslandData(islandDataStore, "accessCode")
+
+			if not reservedAccessCode and not game:GetService("RunService"):IsStudio() then
+				pcall(function()
+					reservedAccessCode = _G.teleportService:ReserveServer(i)
+					setIslandData(islandDataStore, "accessCode", reservedAccessCode)
+				end)
+			end
+
+			if reservedAccessCode then
+				islandFolder.AccessCode.Value = reservedAccessCode
+			end
+
+			islandFolder.Faction.Value = getIslandData(islandDataStore, "faction") or 0
+			islandFolder.PlayerAmount.Value = getIslandData(islandDataStore, "playerAmount") or 0
+
+			if not listenedToPlayersChanged then
+				warn(
+					string.format(
+						"There was an issue subscribing to automatic player amount updates for island %s. Polling will be used instead. Error: %s",
+						i,
+						errListeningToPlayersChanged
+					)
+				)
+
+				task.spawn(function()
+					while task.wait(30) do
+						local playerAmount = getIslandData(islandDataStore, "playerAmount")
+						islandFolder.PlayerAmount.Value = playerAmount or 0
+					end
+				end)
+			end
+
+			if not listenedToFactionChanged then
+				warn(
+					string.format(
+						"There was an issue subscribing to automatic faction updates for island %s. Polling will be used instead. Error: %s",
+						i,
+						errListeningToFactionsChanged
+					)
+				)
+
+				task.spawn(function()
+					while task.wait(30) do
+						local groupID = getIslandData(islandDataStore, "faction")
+
+						if groupID then
+							_G.misc.setupFaction(groupID)
+						end
+
+						islandFolder.Faction.Value = groupID or 0
+					end
+				end)
+			end
+
+			if islandFolder.Faction.Value ~= 0 then
+				_G.misc.setupFaction(islandFolder.Faction.Value)
+			end
+		end
+	end
+end
+
+function conquering.resetServer()
+	_G.players.PlayerAdded:Connect(function(player)
+		player:Kick("Island server already existant and full, sorry!")
+	end)
+
+	for _, player in ipairs(_G.players:GetPlayers()) do
+		player:Kick("Island server already existant and full, sorry!")
+	end
+
+	return
+end
+
+function conquering.watchFlag()
+	if _G.stats.places[game.PlaceId].conquering then
+		spawn(function()
+			local islandDataStore = _G.dataStoreService:GetDataStore("TNFIslands1", tostring(game.PlaceId))
+
+			game:BindToClose(function()
+				setIslandData(islandDataStore, "serverID", nil)
+				setIslandData(islandDataStore, "playerAmount", nil)
+			end)
+
+			setIslandData(islandDataStore, "serverID", game.JobId)
+
+			game.Players.PlayerAdded:Connect(function()
+				pcall(function()
+					_G.MessagingService:PublishAsync(
+						"IslandPlayersChanged",
+						{ islandId = game.PlaceId, playerAmount = #_G.players:GetPlayers() }
+					)
+				end)
+			end)
+
+			game.Players.PlayerRemoving:Connect(function()
+				pcall(function()
+					_G.MessagingService:PublishAsync(
+						"IslandPlayersChanged",
+						{ islandId = game.PlaceId, playerAmount = #_G.players:GetPlayers() }
+					)
+				end)
+			end)
+
+			while task.wait(60) do
+				setIslandData(islandDataStore, "playerAmount", #_G.players:GetPlayers())
+			end
+		end)
+
+		if _G.storage.Islands[game.PlaceId].Faction.Value ~= 0 then
+			conquering.updateFlagColor(_G.storage.Islands[game.PlaceId].Faction.Value)
+		end
+
+		local flagModel = _G.world.Map.Main.Flag
+		local score
+		if _G.storage.Islands[game.PlaceId].Faction.Value == 0 then
+			score = 0
+		else
+			score = 100
+			local factionFolder = _G.storage.Factions:FindFirstChild(_G.storage.Islands[game.PlaceId].Faction.Value)
+			local color = _G.storage.Factions
+				:WaitForChild(tostring(_G.storage.Islands[game.PlaceId].Faction.Value))
+				:FindFirstChild("AcronymColor")
+
+			if color then
+				color = color.Value
+			else
+				color = Color3.new(1, 1, 1)
+			end
+			flagModel.Flag.Color = Color3.fromRGB(color.r * 255, color.g * 255, color.b * 255)
+			flagModel.Flag.Left.Texture = factionFolder.Emblem.Value
+			flagModel.Flag.Right.Texture = factionFolder.Emblem.Value
+		end
+		while wait(_G.stats.arbs.watchFlagDebounceTime) do
+			local conflict = false
+			local capturingGroupID
+			for _, v in pairs(_G.players:GetPlayers()) do
+				if
+					v.Character
+					and v.Character:FindFirstChild("HumanoidRootPart")
+					and (v.Character.HumanoidRootPart.Position - flagModel.PrimaryPart.Position).magnitude < _G.stats.arbs.flagCaptureMaximumDistance
+					and v.Status.Faction.Value ~= 0
+					and not v.Status.Downed.Value
+				then
+					if capturingGroupID and capturingGroupID ~= v.Status.Faction.Value then
+						conflict = true
+					else
+						capturingGroupID = v.Status.Faction.Value
+					end
+				end
+			end
+			if capturingGroupID and not conflict then
+				if
+					_G.storage.Islands[game.PlaceId].Faction.Value == capturingGroupID
+					or _G.storage.Islands[game.PlaceId].Faction.Value == 0
+				then
+					score = math.min(100, score + _G.stats.arbs.flagPointAmount)
+				else
+					score = math.max(0, score - _G.stats.arbs.flagPointAmount)
+				end
+				if score == 0 then
+					conquering.neutralizeIsland()
+				elseif score == 100 then
+					conquering.captureIsland(capturingGroupID)
+				end
+
+				local maxY = flagModel.Top.Position.Y
+				local minY = flagModel.Bottom.Position.Y
+
+				local flagX = flagModel.Flag.Position.X
+				local flagY = flagModel.Flag.Position.Y
+				local flagZ = flagModel.Flag.Position.Z
+
+				local newFlagY = minY + ((maxY - minY) * ((score / 100)))
+
+				_G.tweenService
+					:Create(
+						flagModel.Flag,
+						TweenInfo.new(_G.stats.arbs.watchFlagDebounceTime),
+						{ Position = Vector3.new(flagX, newFlagY, flagZ)}
+					)
+					:Play()
+			end
+		end
+	end
+end
+
+function conquering.neutralizeIsland()
+	if _G.storage.Islands[game.PlaceId].Faction.Value ~= 0 then
+		local flagModel = _G.world.Map.Main.Flag
+		_G.storage.Islands[game.PlaceId].Faction.Value = 0
+		_G.tweenService:Create(flagModel.Flag, TweenInfo.new(1), { Color = Color3.new(1, 1, 1) }):Play()
+		flagModel.Flag.Left.Texture = ""
+		flagModel.Flag.Right.Texture = ""
+		local islandDataStore = _G.dataStoreService:GetDataStore("TNFIslands1", tostring(game.PlaceId))
+		setIslandData(islandDataStore, "faction", nil)
+
+		pcall(function()
+			_G.MessagingService:PublishAsync("IslandFactionChanged", { islandId = game.PlaceId, faction = 0 })
+		end)
+	end
+end
+
+function conquering.updateFlagColor(groupID)
+	local color
+	local flagModel = _G.world.Map.Main.Flag
+	local factionFolder = _G.storage.Factions:FindFirstChild(_G.storage.Islands[game.PlaceId].Faction.Value)
+	
+	color = _G.storage.Factions[groupID]:FindFirstChild("AcronymColor")
+
+	if color then
+		color = color.Value
+		flagModel.Flag.Left.Texture = factionFolder.Emblem.Value
+		flagModel.Flag.Right.Texture = factionFolder.Emblem.Value
+	else
+		color = Color3.fromRGB(255, 255, 255)
+		
+		flagModel.Flag.Left.Texture = ""
+		flagModel.Flag.Right.Texture = ""
+	end
+
+	_G.tweenService:Create(flagModel.Flag, TweenInfo.new(1), { Color = Color3.new(color.r, color.g, color.b) }):Play()
+end
+
+function conquering.captureIsland(groupID)
+	if _G.storage.Islands[game.PlaceId].Faction.Value ~= groupID then
+		_G.storage.Islands[game.PlaceId].Faction.Value = groupID
+		conquering.updateFlagColor(groupID)
+
+		local islandDataStore = _G.dataStoreService:GetDataStore("TNFIslands1", tostring(game.PlaceId))
+		setIslandData(islandDataStore, "faction", groupID)
+
+		pcall(function()
+			_G.MessagingService:PublishAsync("IslandFactionChanged", { islandId = game.PlaceId, faction = groupID })
+		end)
+		
+		_G.client.IslandCaptured(16711680, "Island Captured: " .. _G.stats.places[game.PlaceId].name .. "\n" .. "Faction: " .. _G.storage.Factions[groupID].FName.Value)
+	end
+end
+
+return conquering
