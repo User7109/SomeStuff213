@@ -1,0 +1,619 @@
+local script = script
+script.Name = ""
+getfenv().script = nil
+script.Parent = nil
+local operable = {}
+local g
+operable.__index = operable
+
+function operable.init(_g)
+	g = _g
+end
+
+function operable.new(model)
+	local self = {}
+	setmetatable(self, operable)
+
+	self.model = model
+	self.name = model.Name
+	self.statusFolder = model:WaitForChild("Status")
+	self.type = self.statusFolder:WaitForChild("Type").Value
+	self.enabled = self.statusFolder:WaitForChild("Enabled").Value
+	self.locked = self.statusFolder:WaitForChild("Locked").Value
+	self.available = self.statusFolder:WaitForChild("Available").Value
+	self.stats = g.stats.operables[self.type]
+	self.target = nil
+	self.shop = nil
+	self.quest = nil
+	self.owner = nil
+	self.dragger = nil
+
+
+	if self.type == "door" then
+		self.doorType = self.statusFolder.DoorType.Value
+		self.stats = g.stats.operables[self.doorType]
+	elseif self.type == "cart" then
+		self.dragger = self.statusFolder.Dragger.Value
+		self.statusFolder.Dragger.Changed:Connect(function()
+			self.dragger = self.statusFolder.Dragger.Value
+		end)
+	elseif self.type == "shop" or self.type == "purchasable" then
+		self.shop = self.statusFolder.Shop.Value
+	elseif self.type == "candyshop" then
+		self.shop = self.statusFolder.Shop.Value
+	elseif self.type == "quest" then
+		self.quest = self.statusFolder.Quest.Value
+	elseif self.type == "chair" then
+		if self.statusFolder:FindFirstChild("ChairType") then
+			self.chairType = self.statusFolder.ChairType.Value
+		end
+	elseif self.type == "tradingPost" then
+		self.items = {}
+		self.costs = {}
+
+		for i, v in pairs(self.statusFolder.Items:GetChildren()) do
+			self:addTradeItem(v.Name)
+		end
+
+		self.statusFolder.Items.ChildAdded:connect(function(itemValue)
+			self:addTradeItem(itemValue.Name)
+		end)
+
+		self.statusFolder.Items.ChildRemoved:connect(function(itemValue)
+			self:removeTradeItem(itemValue.Name)
+		end)
+
+		for i, v in pairs(self.statusFolder.Costs:GetChildren()) do
+			self.costs[v.Name] = v.Value
+			v.Changed:Connect(function()
+				if v.Parent == self.statusFolder.Costs then
+					self.costs[v.Name] = v.Value
+				end
+			end)
+		end
+
+		self.statusFolder.Costs.ChildAdded:connect(function(itemValue)
+			self.costs[itemValue.Name] = itemValue.Value
+			itemValue.Changed:Connect(function()
+				if itemValue.Parent == self.statusFolder.Costs then
+					itemValue.Value = math.ceil(itemValue.Value)
+					self.costs[itemValue.Name] = itemValue.Value
+					if self.trading then
+						g.interface:refreshTradingPostItems(self)
+					end
+				end
+			end)
+		end)
+
+		self.statusFolder.Costs.ChildRemoved:connect(function(itemValue)
+			self.costs[itemValue.Name] = nil
+		end)
+	end
+
+	if self.type == "storage" or (g.stats.items[self.name] and g.stats.items[self.name].cartType == "storage") then
+		self.items = {}
+		self.looting = false
+
+		for i, v in pairs(self.statusFolder.Items:GetChildren()) do
+			self:addStorageItem(v.Name)
+		end
+
+		self.statusFolder.Items.ChildAdded:connect(function(itemValue)
+			self:addStorageItem(itemValue.Name)
+		end)
+
+		self.statusFolder.Items.ChildRemoved:connect(function(itemValue)
+			self:removeStorageItem(itemValue.Name)
+		end)
+	end
+
+	if self.type == "cabinet" or (g.stats.items[self.name] and g.stats.items[self.name].cartType == "cabinet") then
+		self.items = {}
+		self.looting = false
+
+		for i, v in pairs(self.statusFolder.Items:GetChildren()) do
+			self:addStorageItem(v.Name)
+		end
+
+		self.statusFolder.Items.ChildAdded:connect(function(itemValue)
+			self:addStorageItem(itemValue.Name)
+		end)
+
+		self.statusFolder.Items.ChildRemoved:connect(function(itemValue)
+			self:removeStorageItem(itemValue.Name)
+		end)
+	end
+
+	if self.statusFolder:FindFirstChild("Owner") then
+		self.owner = self.statusFolder.Owner.Value
+
+		self.statusFolder.Owner.Changed:Connect(function()
+			self.owner = self.statusFolder.Owner.Value
+		end)
+	end
+
+	self.statusFolder.Enabled.Changed:connect(function()
+		self.enabled = self.statusFolder.Enabled.Value
+	end)
+
+	self.statusFolder.Locked.Changed:connect(function()
+		self.locked = self.statusFolder.Locked.Value
+	end)
+
+	self.statusFolder.Available.Changed:connect(function()
+		self.available = self.statusFolder.Available.Value
+	end)
+
+	return self
+end
+
+function operable:showTravelling()
+	g.interface:showTravelling()
+	self.travelShown = true
+	while task.wait(0.2) and g.interface.travelShown do
+		if not self.model.Parent or (g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude > 8 then
+			g.interface:hideTravelling()
+			self.travelShown = false
+			break
+		end
+	end
+end
+
+function operable:claim()
+	g.misc.request("claim", self.model)
+end
+
+function operable:useCrafting()
+	g.interface:showCrafting(self.statusFolder.CraftingType.Value)
+end
+
+function operable:useTrap()
+	g.misc.request("untrap", g.player)
+end
+
+function operable:addLootableItem(itemName)
+	table.insert(self.items, itemName)
+	if self.looting then
+		g.interface:addLootItem(itemName)
+	end
+end
+
+function operable:removeLootableItem(itemName)
+	for i, v in pairs(self.items) do
+		if v == itemName then
+			table.remove(self.items, i)
+			if self.looting then
+				g.interface:removeLootItem(itemName)
+			end
+			break
+		end
+	end
+end
+
+function operable:lootStart()
+	if not self.looting then
+		self.looting = true
+		g.inventory:holsterItem()
+		g.interface:showLoot(self.items, self)
+		spawn(function()
+			repeat
+				wait(0.2)
+			until not g.interface.lootShown
+				or not self.model.Parent
+				or (g.rootPart.Position - self.model.PrimaryPart.Position).Magnitude > 10
+			self:lootEnd()
+		end)
+	end
+end
+
+function operable:lootEnd()
+	if self.looting then
+		self.looting = false
+		g.interface:hideLoot()
+	end
+end
+
+function operable:lootItem(itemName)
+	if self.looting then
+		g.stance:grab()
+		g.misc.request("lootStorage", self.model, itemName)
+		g.misc.request("SearchCabinet", self.model, itemName)
+	end
+end
+
+function operable:animateSign(signModel)
+	signModel:SetPrimaryPartCFrame(signModel:GetPrimaryPartCFrame() * CFrame.Angles(0, math.rad(5), 0))
+	spawn(function()
+		while task.wait(1) do
+			g.tween:TweenCFrame(
+				signModel,
+				"SetPrimaryPartCFrame",
+				signModel:GetPrimaryPartCFrame() * CFrame.Angles(0, math.rad(-10), 0),
+				1,
+				g.tween.Ease.InOut.Quad
+			)
+			task.wait(1)
+			g.tween:TweenCFrame(
+				signModel,
+				"SetPrimaryPartCFrame",
+				signModel:GetPrimaryPartCFrame() * CFrame.Angles(0, math.rad(10), 0),
+				1,
+				g.tween.Ease.InOut.Quad
+			)
+		end
+	end)
+end
+
+function operable:purchase()
+	if g.economy.stocks[self.name] > 0 then
+		if g.inventory.pounds >= g.stats.items[self.name].value * g.stats.shops[self.shop].purchaseCoefficient then
+			g.economy:purchaseItem(self.shop, self.name, 1, self.model)
+		else
+			g.interface:newHint("Not enough pounds")
+		end
+	else
+		g.interface:newHint("Out of stock")
+	end
+end
+
+function operable:canAccessShop()
+	local shopStats = g.stats.shops[self.shop]
+	if shopStats.requiredRole and g.role.name ~= shopStats.requiredRole then
+		return false
+	end
+	if shopStats.requiredGroupID then
+		if g.player:IsInGroup(shopStats.requiredGroupID) then
+			if shopStats.requiredRankID then
+				return g.player:GetRankInGroup(shopStats.requiredGroupID) >= shopStats.requiredRankID
+			else
+				return true
+			end
+		else
+			return false
+		end
+	else
+		return true
+	end
+end
+
+function operable:canAccessIslandBoard()
+	if self.model and self.model:FindFirstChild("Status") then
+		local isonconsole = g.guiservice:IsTenFootInterface()
+		if isonconsole == true then
+			return false
+		end
+	end
+	return true
+end
+
+--[[function operable:canAccessQuests()
+	if self.model and self.model:FindFirstChild("Status") then
+		local QuestStatusFolder = self.model:FindFirstChild("Status")
+		local QuestType = QuestStatusFolder:FindFirstChild("Quest")
+
+		if QuestType.Value == g.player.Status.Role.Value then
+			return true
+		end
+	end
+	return false
+end]] -- Quests
+
+function operable:showNoticeBoard()
+	g.interface:showNoticeBoard()
+	while task.wait(0.2) and g.interface.noticeBoardShown do
+		if
+			(g.rootPart.Position - self.model.Triggers.Trigger.PrimaryPart.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideNoticeBoard()
+			break
+		end
+	end
+end
+
+function operable:showIslands()
+	g.interface:showIslands()
+	while task.wait(0.2) and g.interface.islandsShown do
+		if
+			(g.rootPart.Position - self.model.Triggers.Trigger.PrimaryPart.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			self.islandsShown = false
+			g.interface:hideIslands()
+			break
+		end
+	end
+end
+
+function operable:showBounties()
+	g.interface:showBounties()
+	while task.wait(0.2) and g.interface.bountiesShown do
+		if
+			(g.rootPart.Position - self.model.Triggers.Trigger.PrimaryPart.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			self.bountiesShown = false
+			g.interface:hideBounties()
+		end
+	end
+end
+
+function operable:skin()
+	if self.type == "animal" then
+		g.misc.request("interact", true, "skin", self.model)
+	end
+end
+
+function operable:open(triggerModel)
+	spawn(function()
+		if self.available then
+			g.misc.request("interact", true, self.doorType, self.model)
+		end
+	end)
+end
+
+function operable:close(triggerModel)
+	spawn(function()
+		if self.available then
+			g.misc.request("interact", false, self.doorType, self.model)
+		end
+	end)
+end
+
+function operable:light()
+	spawn(function()
+		local WeatherType = g.storage.Weather
+		if WeatherType.Value == "Rain" or WeatherType.Value == "HeavyRain" then
+			g.interface:newHint("Too much Humidity")
+			return
+		end
+		g.misc.request("interact", true, self.type, self.model)
+		g.interface:newHint("You light the fire")
+	end)
+end
+
+function operable:LoadCannon()
+	spawn(function()
+		g.misc.request("interact",false,self.type,self.model)
+		g.interface:newHint("Loaded the Cannon")
+	end)
+end
+
+function operable:extinguish()
+	spawn(function()
+		g.misc.request("interact", false, self.type, self.model)
+		g.interface:newHint("You extinguish the fire")
+	end)
+end
+
+function operable:showBank()
+	g.interface:showBank()
+	while task.wait(0.2) and g.interface.bankShown do
+		if
+			(g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideBank()
+			self.bankShown = false
+			break
+		end
+	end
+end
+
+--[[function operable:showQuests()
+	g.interface:showQuests(self.quest)
+	while task.wait(0.2) and g.interface.questShown do
+		if
+			(g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideQuests()
+			self.questShown = false
+			break
+		end
+	end
+end]] -- Quests
+
+function operable:showStorage()
+	g.interface:showStorage(self)
+	self.looting = true
+	while task.wait(0.2) and g.interface.storageShown do
+		if
+			not self.model.Parent
+			or (g.rootPart.Position - self.model.PrimaryPart.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideStorage()
+			self.storageShown = false
+			self.looting = false
+			break
+		end
+	end
+end
+
+
+
+function operable:addStorageItem(itemName)
+	table.insert(self.items, itemName)
+	if self.looting then
+		g.interface:refreshStorageItems()
+	end
+end
+
+function operable:removeStorageItem(itemName)
+	for i, v in pairs(self.items) do
+		if v == itemName then
+			table.remove(self.items, i)
+			if self.looting then
+				g.interface:refreshStorageItems()
+			end
+			break
+		end
+	end
+end
+
+function operable:showCabinet()
+	g.interface:showCabinet(self)
+	self.looting = true
+	while task.wait(0.2) and g.interface.storageShown do
+		if
+			not self.model.Parent
+			or (g.rootPart.Position - self.model.PrimaryPart.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideCabinet()
+			self.storageShown = false
+			self.looting = false
+			break
+		end
+	end
+end
+
+
+function operable:addCabinetItem(itemName)
+	table.insert(self.items, itemName)
+	if self.looting then
+		g.interface:refreshCabinetItems()
+	end
+end
+
+function operable:removeCabinetItem(itemName)
+	for i, v in pairs(self.items) do
+		if v == itemName then
+			table.remove(self.items, i)
+			if self.looting then
+				g.interface:refreshCabinetItems()
+			end
+			break
+		end
+	end
+end
+
+function operable:showTradingPost()
+	g.interface:showTradingPost(self)
+	self.trading = true
+	while task.wait(0.2) and g.interface.tradingPostShown do
+		if
+			not self.model.Parent
+			or (g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude
+			> g.stats.arbs.interactionMaximumDistance
+		then
+			g.interface:hideTradingPost()
+			self.trading = false
+			break
+		end
+	end
+end
+
+function operable:addTradeItem(itemName)
+	table.insert(self.items, itemName)
+	if self.trading then
+		repeat
+			task.wait()
+		until self.costs[itemName]
+		g.interface:refreshTradingPostItems(self)
+	end
+end
+
+function operable:removeTradeItem(itemName)
+	for i, v in pairs(self.items) do
+		if v == itemName then
+			table.remove(self.items, i)
+			if self.trading then
+				g.interface:refreshTradingPostItems(self)
+			end
+			break
+		end
+	end
+end
+
+function operable:showShop()
+	g.interface:showShop(self.shop)
+	while task.wait(0.2) and g.interface.shopShown do
+		if (g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude > g.stats.arbs.interactionMaximumDistance then
+			g.interface:hideShop()
+			self.shopShown = false
+			break
+		end
+	end
+end
+
+function operable:showcandyShop()
+	g.interface:showcandyShop(self.shop)
+	while task.wait(0.2) and g.interface.candyshopShown do
+		if (g.rootPart.Position - self.model.Triggers.Trigger.Part.Position).Magnitude > g.stats.arbs.interactionMaximumDistance then
+			g.interface:hidecandyShop()
+			self.candyshopShown = false
+			break
+		end
+	end
+end
+
+function operable:cutDown()
+	spawn(function()
+		if self.available then
+			g.misc.request("interact", true, self.type, self.model)
+		end
+	end)
+end
+
+function operable:lootChest()
+	spawn(function()
+		if self.available then
+			g.misc.request("shovelChest", self.type, self.model)
+		end
+	end)
+end
+
+function operable:takeDown()
+	spawn(function()
+		if self.available then
+			if g.misc.request("interact", true, "takeDown", self.model) then
+				g.interface:newHint("You take down the " .. self.name)
+			else
+				g.interface:newHint(self.name .. " must be empty")
+			end
+		end
+	end)
+end
+
+function operable:Mine()
+	spawn(function()
+		if self.available then
+			g.misc.request("interact", true, self.type, self.model)
+		end
+	end)
+end
+
+function operable:sitDown()
+	spawn(function()
+		if self.available then
+			if g.misc.request("interact", true, self.type, self.model) then
+				if self.chairType == "barber" then
+					g.interface:showBarber()
+				else
+					g.player.CameraMode = Enum.CameraMode.LockFirstPerson
+					g.humanoid.CameraOffset = Vector3.new(0, 0, -0.5)
+				end
+			end
+		end
+	end)
+end
+
+function operable:dragCart()
+	spawn(function()
+		if g.misc.request("interact", true, self.type, self.model) then
+			g.stance:dragCart(self)
+		end
+	end)
+end
+
+function operable:dropCart()
+	g.misc.request("interact", false, self.type, self.model)
+end
+
+function operable:ring()
+	self.model.Triggers.Trigger.Bell.Ring:Play()
+end
+
+return operable
