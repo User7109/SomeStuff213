@@ -1,0 +1,358 @@
+local ZoneModule = require(script.Parent.Zone)
+
+local requests = {}
+
+function requests.purchaseItem(player, shop, itemName, itemAmount, displayModel)
+	return _G.economy.purchaseItem(player, shop, itemName, itemAmount, displayModel)
+end
+
+function requests.purchaseItemTradingPost(player, tradingPost, itemName)
+	return _G.economy.purchaseItemTradingPost(player, tradingPost, itemName)
+end
+
+function requests.sellItem(player, shop, itemName, itemAmount)
+	return _G.economy.sellItem(player, shop, itemName, itemAmount)
+end
+
+function requests.animatePlayerFire(player, itemModel, ...)
+	return _G.misc.animatePlayerFire(player, itemModel, ...)
+end
+
+function requests.damageHungerPlayer(player)
+	return _G.misc.damageHungerPlayer(player)
+end
+
+function requests.showDrumsticks(player, character)
+	return _G.misc.showDrumsticks(player, character)
+end
+
+function requests.hideDrumsticks(player, character)
+	return _G.misc.hideDrumsticks(player, character)
+end
+
+function requests.awardTutorialBadge(player)
+	return _G.misc.awardTutorialBadge(player)
+end
+
+function requests.untrap(player)
+	return _G.misc.untrap(player)
+end
+
+function requests.updateHunger(player, hunger)
+	return _G.integrity.updateHunger(player, hunger)
+end
+
+function requests.updateWarmth(player, warmth)
+	return _G.integrity.updateWarmth(player, warmth)
+end
+
+function requests.drag(player, request, itemModel, position)
+	return _G.item.drag(player, request, itemModel, position)
+end
+
+function requests.resetPlayerPosition(player)
+	return _G.misc.resetPlayerPosition(player)
+end
+
+function requests.downPlayer(player)
+	return _G.misc.downPlayer(player)
+end
+
+function requests.SetDeathNote(player, newdeathnote)
+	return _G.misc.SetDeathNote(player, newdeathnote)
+end
+
+function requests.banPlayer(player, userName, banReason)
+	return _G.misc.banPlayer(player, userName, banReason)
+end
+
+function requests.unbanPlayer(player, userName)
+	return _G.misc.unbanPlayer(player, userName)
+end
+
+function requests.setPlayerPounds(player, userName, userRole, pounds)
+	return _G.misc.setPlayerPounds(player, userName, userRole, pounds)
+end
+
+--[[function requests.SetStorageSpace(player, userName, userRole, bankStorageSpace)
+	return _G.misc.SetStorageSpace(player, userName, userRole, bankStorageSpace)
+end--]]
+
+function requests.givePlayerItem(player, userName, userRole, itemAmount, itemName)
+	return _G.misc.givePlayerItem(player, userName, userRole, itemAmount, itemName)
+end
+
+function requests.teleporToPlayer(player, userName, userRole)
+	return _G.misc.teleporToPlayer(player, userName, userRole)
+end
+
+function requests.GodModePlayer(player, userName, userRole)
+	return _G.misc.GodModePlayer(player, userName, userRole)
+end
+
+function requests.depositPounds(player, amount)
+	return _G.item.depositPounds(player, amount)
+end
+
+function requests.withdrawPounds(player, amount)
+	return _G.item.withdrawPounds(player, amount)
+end
+
+function requests.takeBank(player, itemName,rateLimitItemTake)
+	return _G.item.takeBank(player, itemName,rateLimitItemTake)
+end
+
+function requests.storeBank(player, itemName,rateLimitItemStore)
+	return _G.item.storeBank(player, itemName,rateLimitItemStore)
+end
+
+function requests.storeStorage(player, itemName, operableModel,rateLimitItemStore)
+	return _G.item.storeStorage(player, itemName, operableModel,rateLimitItemStore)
+end
+
+function requests.takeStorage(player, itemName, operableModel,rateLimitItemTake)
+	return _G.item.takeStorage(player, itemName, operableModel,rateLimitItemTake)
+end
+
+function requests.setItemTradingPostCost(player, itemName, itemCost)
+	return _G.economy.setItemTradingPostCost(player, itemName, itemCost)
+end
+
+function requests.storeTradingPost(player, itemName)
+	return _G.item.storeTradingPost(player, itemName)
+end
+
+function requests.claimDailyReward(player)
+	return _G.misc.claimDailyReward(player)
+end
+
+function requests.travelPlayerIsland(player, placeID)
+	return _G.misc.travelPlayerIsland(player, placeID)
+end
+
+function requests.changeTitle(player, title)
+	return _G.misc.changeTitle(player, title)
+end
+
+function requests.resetTitle(player)
+	return _G.misc.resetTitle(player)
+end
+
+function requests.addTitle(player, title)
+	return _G.misc.addTitle(player, title)
+end
+
+function requests.travelPlayer(player, travelPointName)
+	return _G.misc.travelPlayer(player, travelPointName)
+end
+
+function requests.sendChat(player, chat, whispering)
+	return _G.misc.sendChat(player, chat, whispering)
+end
+
+function requests.takeQuest(player, questdata)
+	return _G.misc.takeQuest(player, questdata)
+end
+
+function requests.ClaimPromocode(player, PromocodeToCheck)
+	--//return _G.Promocodes.ClaimPromocode(player, PromocodeToCheck)
+end
+
+function requests.QuestCompleted(player)
+	return _G.misc.QuestCompleted(player)
+end
+
+function requests.TutorialCompleted(player)
+	return _G.misc.TutorialCompleted(player)
+end
+
+function requests.UpdateTutorialStage(player, tutorialstage)
+	return _G.misc.UpdateTutorialStage(player, tutorialstage)
+end
+
+function requests.remove(player, itemValue)
+	return _G.item.remove(player, itemValue)
+end
+
+function requests.drop(player, itemValue, position1, position2, ...)
+	return _G.item.drop(player, itemValue, position1, position2, ...)
+end
+
+function requests.craft(player, itemName, craftStation)
+	return _G.item.craft(player, itemName, craftStation)
+end
+
+function requests.deploy(player, itemValue, cFrame)
+	return _G.operable.deploy(player, itemValue, cFrame)
+end
+
+function requests.equip(player, itemValue,rateLimitEquip)
+	return _G.item.equip(player, itemValue,rateLimitEquip)
+end
+
+function requests.unequip(player, itemValue)
+	return _G.item.unequip(player, itemValue)
+end
+
+function requests.take(player, itemModel)
+	return _G.item.take(player, itemModel)
+end
+
+function requests.draw(player, itemModel)
+	return _G.item.draw(player, itemModel)
+end
+
+function requests.holster(player, itemModel)
+	return _G.item.holster(player, itemModel)
+end
+
+function requests.updateMusketPose(player, pose, itemModel)
+	return _G.item.updateMusketPose(player, pose, itemModel)
+end
+
+function requests.updatePistolPose(player, pose, itemModel)
+	return _G.item.updatePistolPose(player, pose, itemModel)
+end
+
+function requests.updateCrossbowPose(player, pose, itemModel)
+	return _G.item.updateCrossbowPose(player, pose, itemModel)
+end
+
+function requests.fireMusket(player, itemModel)
+	return _G.item.fireMusket(player, itemModel)
+end
+
+function requests.hitBlockingPlayer(player, targetPlayer)
+	return _G.misc.hitBlockingPlayer(player, targetPlayer)
+end
+
+function requests.bandagePlayer(player, targetPlayer)
+	return _G.misc.bandagePlayer(player, targetPlayer)
+end
+
+function requests.updateBlockingPlayer(player, request)
+	return _G.misc.updateBlockingPlayer(player, request)
+end
+
+function requests.updateTorch(player, request, itemModel)
+	return _G.item.updateTorch(player, request, itemModel)
+end
+
+function requests.updateInstrument(player, request, itemModel)
+	return _G.item.updateInstrument(player, request, itemModel)
+end
+
+function requests.ringBell(player, request, itemModel)
+	return _G.operable.ringBell(player, itemModel)
+end
+
+function requests.shovelChest(player, itemType, itemModel)
+	return _G.misc.shovelChest(player, itemType, itemModel)
+end
+
+function requests.damage(player, targetPlayer, damage, distance, headshot)
+	return _G.misc.damage(player, targetPlayer, damage, distance, headshot)
+end
+
+function requests.TutorialDamage(player, damageamount)
+	return _G.misc.TutorialDamage(player, damageamount)
+end
+
+function requests.claim(player, model)
+	return _G.operable.claim(player, model)
+end
+
+function requests.lootStorage(player, operableModel, itemName)
+	return _G.misc.lootStorage(player, operableModel, itemName)
+end
+
+function requests.enableMusic(player, model, name, newMusic)
+	return _G.misc.enableMusic(player, model, name, newMusic)
+end
+
+function requests.disableMusic(player, model, name)
+	return _G.misc.disableMusic(player, model, name)
+end
+
+function requests.syncMusic(player, char, model, storage)
+	return _G.misc.syncMusic(player, char, model, storage)
+end
+
+function requests.SearchCabinet(player, operableModel, itemName)
+	return _G.misc.SearchCabinet(player, operableModel, itemName)
+end
+
+function requests.interact(player, request, operableType, model, ...)
+	return _G.operable.interact(player, request, operableType, model, ...)
+end
+
+function requests.lootPlayer(player, targetPlayer, itemName)
+	return _G.misc.lootPlayer(player, targetPlayer, itemName)
+end
+
+function requests.setPlayerRole(player, roleName)
+	return _G.misc.setPlayerRole(player, roleName)
+end
+
+function requests.consume(player, itemName)
+	return _G.item.consume(player, itemName)
+end
+
+function requests.setInGrass(player, request, isWalking)
+	return _G.misc.setInGrass(player, request, isWalking)
+end
+
+function requests.setWarmthLow(player, request)
+	return _G.misc.setWarmthLow(player, request)
+end
+
+function requests.respawnPlayer(player)
+	return _G.misc.respawnPlayer(player)
+end
+
+function requests.offerBounty(player, targetPlayer, pounds)
+	return _G.misc.offerBounty(player, targetPlayer, pounds)
+end
+
+function requests.placeBounty(player, targetPlayer, pounds)
+	return _G.misc.placeBounty(player, targetPlayer, pounds)
+end
+
+function requests.ResetCaughtFish(player)
+	return _G.misc.ResetCaughtFish(player)
+end
+
+function requests.GenerateCaughtFish(player, itemValue)
+	return _G.misc.GenerateCaughtFish(player, itemValue)
+end
+
+function requests.TakeCaughtFish(player, itemValue)
+	--if not player.Character.Head:FindFirstChild("LabelBillboardGui") then return nil end
+	return _G.misc.TakeCaughtFish(player, itemValue)
+end
+
+function requests.LogFish(player)
+	return _G.misc.LogFish(player)
+end
+
+function requests.updatePlayerHair(player, colorIndex, hairIndex, facialHairIndex)
+	return _G.misc.updatePlayerHair(player, colorIndex, hairIndex, facialHairIndex)
+end
+
+function requests.reloadStart(player, itemModel)
+	return _G.item.reloadStart(player, itemModel)
+end
+
+function requests.reloadEnd(player, itemModel)
+	return _G.item.reloadEnd(player, itemModel)
+end
+
+function requests.enterZone(player, zoneName)
+	return ZoneModule.OnZoneEntered(player, zoneName)
+end
+
+function requests.leaveZone(player, zoneName)
+	return ZoneModule.OnZoneLeft(player, zoneName)
+end
+
+return requests
