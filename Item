@@ -1,0 +1,1176 @@
+local script = script
+script.Name = ""
+getfenv().script = nil
+script.Parent = nil
+local item = {}
+local g
+item.__index = item
+
+function item.init(_g)
+	g = _g
+end
+
+function item.new(name, model, object)
+	local self = {}
+	setmetatable(self, item)
+
+	self.name = name
+	self.model = model
+	self.animationTracks = {}
+	self.stats = g.stats.items[name]
+	self.object = object
+	self.content = self.stats.content
+	self.equipped = false
+	self.drawn = false
+	self.atEase = false
+	self.zoom = 20
+	self.charging = false
+	self.blocking = false
+	self.lastDrawOrHolster = tick()
+	self.lastCutDownStart = tick()
+	self.lastMiningStart = tick()
+	self.firing = false
+	self.lastAim = tick()
+	self.lastFire = tick()
+	self.reloading = false
+	self.lastReload = tick()
+	self.mag = nil
+	self.aiming = false
+	self.lightEnabled = false
+	self.lazerEnabled = false
+	self.hitConnection = nil
+	self.lastSwing = tick()
+	self.checkingAmmo = false
+	self.lastAmmoCheck = tick()
+	self.lastToggle = tick()
+	self.lastUse = tick()
+	self.gui = nil
+	self.enabled = false
+	self.currentSong = 1
+
+	if self.object then
+		for i, v in pairs(self.object:GetChildren()) do
+			self.content[v.Name] = v.Value
+		end
+	end
+
+	if self.stats.animations then
+		for i, v in pairs(self.stats.animations) do
+			self.animationTracks[i] = g.stance:getAnimationTrack(v)
+		end
+	end
+
+	return self
+end
+
+function item:consume()
+	if self.stats.type == "consumable" then
+		if self.stats.consumableType == "food" then
+			self:eat()
+		elseif self.stats.consumableType == "drink" then
+			self:drink()
+		end
+	end
+end
+
+function item:eat()
+	if g.integrity.hunger < g.stats.arbs.defaultMaxHunger then
+		g.integrity:fillHunger(self.stats.hungerFilled)
+		g.inventory:removeItem(self)
+		g.stance:consumeFood(self.name)
+		g.interface:newHint("You consume the " .. self.name)
+	end
+end
+
+function item:drink()
+	if g.integrity.thirst < g.stats.arbs.defaultMaxThirst then
+		g.integrity:fillThirst(self.stats.thirstFilled)
+		g.inventory:removeItem(self)
+	end
+end
+
+function item:getDistance()
+	if self.model then
+		return (g.rootPart.Position - self.model.PrimaryPart.Position).Magnitude
+	end
+end
+
+function item:equip(rateLimitEquip)
+	if self:canBeEquipped() then
+		self.equipped = true
+		if self.animationTracks.equipped then
+			self.animationTracks.equipped:Play()
+		end
+
+		g.inventory:equipItem(self)
+		coroutine.wrap(function()
+			self.model = g.misc.request("equip", self.object,rateLimitEquip)
+		end)()
+		if self.stats.onEquip then
+			self[self.stats.onEquip](self)
+		end
+	end
+end
+
+function item:unequip()
+	if self.equipped then
+		self.equipped = false
+		if self.animationTracks.equipped then
+			self.animationTracks.equipped:Stop()
+		end
+		if self.stats.onUnequip then
+			self[self.stats.onUnequip](self)
+		end
+		self:holster()
+		g.inventory:unequipItem(self)
+		self.model = nil
+		coroutine.wrap(g.misc.request)("unequip", self.object)
+		if self.stats.componentItems then
+			for i, v in pairs(self.stats.componentItems) do
+				local equippedItem = g.inventory:getEquippedNameItem(v)
+				if equippedItem then
+					equippedItem:unequip()
+				end
+			end
+		end
+		if g.inventory.itemDrawn and g.inventory.itemDrawn == self then
+			g.inventory:holsterItem()
+		end
+	end
+end
+
+function item:take()
+	g.stance:grab()
+	coroutine.wrap(g.misc.request)("take", self.model)
+end
+
+function item:drop()
+	if not g.stance.downed then
+		g.stance:getAnimationTrack(g.stats.arbs.dropItemAnimationID):Play()
+	end
+	g.inventory:dropItem(self)
+	if self.stats.componentItems then
+		for i, v in pairs(self.stats.componentItems) do
+			local equippedItem = g.inventory:getEquippedNameItem(v)
+			if equippedItem then
+				equippedItem:unequip()
+			end
+		end
+	end
+end
+
+function item:canBeEquipped()
+	local canBeEquipped = self.stats.canBeEquipped and not self.equipped
+	if canBeEquipped then
+		if self.stats.requiredItems then
+			for i, v in pairs(self.stats.requiredItems) do
+				if not g.inventory:getEquippedNameItem(v) then
+					canBeEquipped = false
+					break
+				end
+			end
+		end
+	end
+	return canBeEquipped
+end
+
+function item:draw()
+	if not self.drawn then
+		g.inventory:holsterItem()
+		self.lastDrawOrHolster = tick()
+		if self.model.Handle:FindFirstChild("Draw") then
+			self.model.Handle.Draw:Play()
+		end
+		self.animationTracks.draw:Play()
+		self.drawn = true
+		if self.stats.onDraw then
+			self[self.stats.onDraw](self)
+		end
+		coroutine.wrap(g.misc.request)("draw", self.model)
+		g.interface:highlightToolItem(self)
+		wait(self.animationTracks.draw.Length)
+		self.animationTracks.drawn:Play()
+		
+		if self.stats.type == "music" then
+			
+			local Resources = game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources")
+			local instrumentsStorage : Folder = Resources:FindFirstChild("Sounds"):FindFirstChild("Instruments")
+			local myStorage : Folder = instrumentsStorage:FindFirstChild(self.name)
+			
+			g.interface:showMusic()
+			g.interface:updateMusic(myStorage:FindFirstChild(tostring(self.currentSong)))
+		end
+		
+		if self.name == "Drum" then
+			g.misc.request("showDrumsticks", g.character)
+		end
+	end
+end
+
+function item:holster()
+	if self.drawn then
+		self.lastDrawOrHolster = tick()
+		if self.hitConnection then
+			self.hitConnection:Disconnect()
+		end
+		if self.stats.weapon then
+			self:unaim()
+			self:unease()
+		end
+		self.animationTracks.drawn:Stop()
+		self.animationTracks.holster:Play()
+		if self.model.Handle:FindFirstChild("Holster") then
+			self.model.Handle.Holster:Play()
+		end
+		self.drawn = false
+		self.atEase = false
+		self.lastReload = 0
+		if self.stats.onHolster then
+			self[self.stats.onHolster](self)
+		end
+		
+		if self.stats.type == "music" then
+			g.interface:hideMusic()
+			
+			g.misc.request("disableMusic", self.model, self.name)
+
+			if self.animationTracks.playing then
+				self.animationTracks.playing:Stop()
+			end
+		end
+		
+		if self.name == "Drum" then
+			g.misc.request("hideDrumsticks", g.character)
+		end
+		--		g.stance:unfollowMouse()
+		coroutine.wrap(g.misc.request)("holster", self.model)
+		g.interface:unhighlightToolItem(self)
+	end
+end
+
+function item:toggleAtEase()
+	if self.atEase then
+		self:unease()
+	else
+		self:ease()
+	end
+end
+
+function item:ease()
+	if self.drawn and not self.atEase and not self.reloading and tick() - self.lastDrawOrHolster > 0.2 then
+		self.atEase = true
+		self.lastReload = 0
+		self:unaim()
+		self.animationTracks.drawn:Stop()
+		self.animationTracks.atEase:Play()
+		if self.stats.weaponType == "musket" then
+			g.misc.request("updateMusketPose", "atEase", self.model)
+		end
+	end
+end
+
+function item:unease()
+	if self.drawn and self.atEase then
+		self.atEase = false
+		self.animationTracks.atEase:Stop()
+		self.animationTracks.drawn:Play()
+		if self.stats.weaponType == "musket" then
+			g.misc.request("updateMusketPose", "", self.model)
+		end
+	end
+end
+
+function item:fire()
+	if self.drawn and self.aiming and not self.reloading then
+		self.model.Handle.Trigger:Play()
+
+		if self.content.ammoLoaded > 0 and tick() - self.lastFire > 0.1 then
+			self.lastFire = tick()
+
+			self.model.Barrel.Fire:Play()
+			coroutine.wrap(g.misc.request)("fireMusket", self.model)
+			self.animationTracks.fire:Play()
+			self.model.Barrel.FireP.Enabled = true
+			self.model.Barrel.Smoke.Enabled = true
+			g.firing:fire(self)
+
+			task.wait(0.1)
+			self.model.Barrel.FireP.Enabled = false
+			task.wait(0.1)
+			self.model.Barrel.Smoke.Enabled = false
+
+			if self.content.ammoLoaded == 0 then
+				task.wait(0.2)
+				self:unaim()
+			end
+		end
+	end
+end
+
+function item:startCharge()
+	if
+		self.drawn
+		and (self.stats.type == "fishingPole" or (self.aiming and g.inventory:getBackpackNameItem(
+			self.stats.weapon.ammoType
+			) and tick() - self.lastFire > 0.5))
+			and not self.charging
+			and not self.AnimatingProjectile
+	then
+		if self.stats.type == "fishingPole" then
+			if self.content.floater ~= nil and self.content.floater.Parent ~= nil then
+				return
+			end
+		end
+		self.charging = true
+		g.interface:changeCursor("aiming")
+		local lastCharge = tick()
+		self.lastCharge = lastCharge
+		if self.model.Handle:FindFirstChild("Charge") then
+			self.model.Handle.Charge:Play()
+		end
+		local chargeTime = 1
+		if self.stats.weaponType == "bow" then
+			local arrowObject = g.objects.Projectiles.Arrow:Clone()
+			arrowObject.Name = "FakeArrow"
+			local weldObject = Instance.new("Weld", arrowObject)
+			arrowObject.Anchored = false
+			arrowObject.Transparency = 1
+			weldObject.Part0 = arrowObject
+			weldObject.Part1 = g.character["Right Arm"]
+			arrowObject.CFrame = g.character["Right Arm"].CFrame
+				* CFrame.new(-0.2, -3, -0.4)
+				* CFrame.Angles(math.rad(-90), 0, 0)
+			weldObject.C0 = arrowObject.CFrame:inverse() * g.character["Right Arm"].CFrame
+			arrowObject.Parent = g.playerMouseFilter
+			g.tweenService:Create(arrowObject, TweenInfo.new(0.4), { Transparency = 0 }):Play()
+			chargeTime = self.stats.weapon.chargeTime
+			
+			if g.player.Status.Role.Value == "Colonist" then
+				chargeTime *= 1.8
+			end
+			
+		end
+		self.animationTracks.charge:Play(nil, nil, 0.5 / chargeTime)
+		task.wait((chargeTime * 2) - 0.1)
+		if self.charging and self.lastCharge == lastCharge then
+			self.animationTracks.chargeHold:Play()
+			if self.model.Handle:FindFirstChild("Charge") then
+				self.model.Handle.Charge:Stop()
+			end
+		end
+	end
+end
+
+function item:endCharge()
+	
+	local function checkTerrainFromFloater(floater)
+		local rayOrigin = floater.Position
+		local rayDirection = Vector3.new(0, -2, 0)
+
+		local result = workspace:Raycast(rayOrigin, rayDirection)
+		if result and result.Material == Enum.Material.Water then
+			return true
+		end
+		
+		return false
+	end
+	
+	if self.stats.type == "fishingPole" then
+		if self.content.floater ~= nil and self.content.floater.Parent ~= nil then
+			return
+		end
+		if self.AnimatingProjectile == true then
+			return
+		end
+
+		g.interface:changeCursor("normal")
+		if self.content.floater then
+			self.content.floater:Destroy()
+		end
+		coroutine.wrap(g.misc.request)("ResetCaughtFish", g.correctArg)
+	end
+	if self.charging then
+		self.charging = false
+		self.lastFire = tick()
+		self.animationTracks.charge:Stop()
+		self.animationTracks.chargeHold:Stop()
+		if self.model.Handle:FindFirstChild("Charge") then
+			self.model.Handle.Charge:Stop()
+		end
+		local ammo
+		if self.stats.weaponType == "bow" or self.stats.weaponType == "crossbow" then
+			g.interface:changeCursor("normal")
+			local arrowObject = g.playerMouseFilter:FindFirstChild("FakeArrow")
+			if arrowObject then
+				arrowObject:Destroy()
+			end
+			ammo = g.inventory:getBackpackNameItem(self.stats.weapon.ammoType)
+		end
+		if self.drawn and (self.stats.type == "fishingPole" or ammo) then
+			if ammo then
+				coroutine.wrap(function()
+					g.inventory:removeItem(ammo)
+				end)()
+			end
+			local chargeForce
+			if self.stats.weaponType == "bow" or self.stats.weaponType == "crossbow" then
+				chargeForce = (
+					math.min(self.stats.weapon.chargeTime, tick() - self.lastCharge) / self.stats.weapon.chargeTime
+				) * self.stats.weapon.projectile.force
+			else
+				chargeForce = (math.min(2, tick() - self.lastCharge) / 12) * (self.stats.effectivenessThrow or 1)
+			end
+			self.content.chargeForce = chargeForce
+			if self.animationTracks.fire then
+				self.animationTracks.fire:Play()
+			end
+			self.model.Handle.Shoot:Play()
+			if self.stats.weaponType == "bow" or self.stats.weaponType == "crossbow" then
+				g.firing:fire(self)
+			elseif self.stats.type == "fishingPole" then
+				
+				local gotFish = false
+
+				g.interface:newHint("Repeatedly tap R to reel in after you've caught a fish!")
+				self.AnimatingProjectile = true
+				self.content.floater = g.firing:animateProjectile(self.model, g.mouse.Hit.p, chargeForce, true)
+				self.AnimatingProjectile = false
+				
+				task.spawn(function()
+					while self.content.floater and gotFish == false do
+						task.wait(1)
+						
+						if checkTerrainFromFloater(self.content.floater) == false then
+							self.content.floater:Destroy()
+							return
+						end
+					end
+				end)
+				
+				if self.content.floater then
+					
+					self.content.floater.Touched:Connect(function(hitObject)
+						
+						local water = checkTerrainFromFloater(self.content.floater)						
+
+						if water then
+							self.content.floater.CanCollide = true
+							if self.content.floater:FindFirstChild("Fish") then
+								self.content.floater.Fish.Body.CustomPhysicalProperties =
+									PhysicalProperties.new(1, 0, 0, 0, 0)
+							end
+						end
+					end)
+					self.content.floater.TouchEnded:Connect(function(part)
+						local water = checkTerrainFromFloater(self.content.floater)		
+						
+						if water then
+							return
+						end
+						
+						self.content.floater.CanCollide = false
+						if self.content.floater:FindFirstChild("Fish") then
+							self.content.floater.Fish.Body.CustomPhysicalProperties =
+								PhysicalProperties.new(1, 0, 0, 0, 0)
+						end
+					end)
+					
+					task.spawn(function()
+
+						local bubbleMinigame = require(game.ReplicatedStorage.TNF.Resources.Modules.Minigame)
+						local currFloater = self.content.floater
+						
+						while self.content.floater == currFloater and gotFish == false do
+							
+							local success = nil
+							local finished = false
+							
+							bubbleMinigame:startFishing(function(result)
+								success = result
+								finished = true
+							end)
+							
+							repeat task.wait() until finished
+							
+							if not success then
+								if self.content.floater then
+									self.content.floater:Destroy()
+									print("No success.")
+								end
+								
+								break
+							end
+
+							task.wait(math.random(3, 5))
+						end
+					end)
+					
+					local lastThrow = tick()
+					self.content.lastThrow = lastThrow
+					local caughtFishName = g.misc.request("LogFish", g.correctArg)
+					delay(
+						math.random(20 * (self.stats.effectivenessTime or 1), 50 * (self.stats.effectivenessTime or 1)),
+						function()
+							
+							gotFish = true
+							
+							if self.content.lastThrow == lastThrow then
+								local isInWater = false
+								
+								isInWater = checkTerrainFromFloater(self.content.floater)
+								
+								if not isInWater then
+									print("Not in water.")
+									self.content.floater:Destroy()
+									return
+								end
+								
+								local caughtFishName = g.misc.request("GenerateCaughtFish", self.object, g.correctArg)
+								if caughtFishName then
+									local caughtFishModel = g.objects.Items[caughtFishName]:Clone()
+									caughtFishModel.Name = "Fish"
+									caughtFishModel.Body.CustomPhysicalProperties =
+										PhysicalProperties.new(1, 0, 0, 0, 0)
+									caughtFishModel.Body.CFrame = self.content.floater.CFrame
+										* CFrame.new(caughtFishModel.Body.Attachment.Position)
+									self.content.floater.BallSocketConstraint.Attachment1 =
+										caughtFishModel.Body.Attachment
+									caughtFishModel.Body.CanCollide = false
+
+									local skip = false
+
+									for _ = 1, 6 do
+										if skip == false then
+											pcall(function()
+												if
+													self.content.floater == nil
+													or self.content.floater.Parent == nil
+												then
+													skip = true
+													return
+												end
+												wait(1)
+												if
+													self.content.floater == nil
+													or self.content.floater.Parent == nil
+												then
+													skip = true
+													return
+												end
+												caughtFishModel.Parent = self.content.floater
+												isInWater = false
+												
+												isInWater = checkTerrainFromFloater(self.content.floater)
+												
+										
+												if isInWater then
+													self.content.floater.Impact:Play()
+													self.content.floater.ParticleEmitter.Enabled = true
+													delay(0.2, function()
+														self.content.floater.ParticleEmitter.Enabled = false
+													end)
+												end
+											end)
+										end
+									end
+									if skip == false then
+										isInWater = false
+										isInWater = checkTerrainFromFloater(self.content.floater)
+										if isInWater then
+											coroutine.wrap(g.misc.request)("ResetCaughtFish", self.object, g.correctArg)
+											self.content.floater:Destroy()
+										end
+									end
+								else
+									print("No caught fish name.")
+									self.content.floater:Destroy()
+								end
+							end
+						end
+					)
+				end
+			end
+		end
+	end
+end
+
+function item:FishingUnequip()
+	if self.content.floater then
+		self.content.floater:Destroy()
+	end
+end
+
+function item:reelFishingPole()
+	if self.content.floater then
+		g.tweenService
+			:Create(self.model.Tip.RopeConstraint, TweenInfo.new(0.3), {
+				Length = math.max(1, self.model.Tip.RopeConstraint.Length - (5 * (self.stats.effectivenessReel or 1))),
+			})
+			:Play()
+		if self.model.Tip.RopeConstraint.Length <= 5 and self.content.floater then
+			if g.misc.request("TakeCaughtFish", self.object, g.correctArg) then
+				if self.content.floater:FindFirstChild("Fish") then
+					self.model.Handle.TakeFish:Play()
+					g.stance:grab()
+					g.interface:newHint("You take the fish")
+					self.content.floater.Fish:Destroy()
+					self.content.floater:Destroy()
+				end
+			else
+				self.content.floater:Destroy()
+			end
+		else
+			self.model.Handle.ReelIn:Play()
+		end
+	end
+end
+
+function item:toggleAim()
+	if tick() - self.lastAim > 0.3 then
+		if self.aiming then
+			self:unaim()
+		else
+			self:aim()
+		end
+	end
+end
+
+function item:aim()
+	if self.drawn and not self.aiming and not self.reloading and tick() - self.lastDrawOrHolster > 0.3 then
+		self.lastAim = tick()
+		self:unease()
+		self.aiming = true
+		self.animationTracks.aiming:AdjustWeight(1, 0.3)
+		self.animationTracks.aiming:Play()
+		g.tweenService:Create(g.camera, TweenInfo.new(0.4), { FieldOfView = g.stats.arbs.zoomedInFieldOfView }):Play()
+		g.tweenService:Create(g.humanoid, TweenInfo.new(0.4), { CameraOffset = Vector3.new(1, 0, -2) }):Play()
+		if self.stats.weaponType == "musket" then
+			g.interface:changeCursor("aiming")
+			g.misc.request("updateMusketPose", "aim", self.model)
+		elseif self.stats.weaponType == "pistol" then
+			g.interface:changeCursor("aiming")
+			g.misc.request("updatePistolPose", "", self.model)
+		elseif self.stats.weaponType == "crossbow" then
+			g.interface:changeCursor("aiming")
+			g.misc.request("updateCrossbowPose", "", self.model)
+
+			local arrowObject = g.objects.Projectiles.Arrow:Clone()
+			arrowObject.Name = "FakeArrow"
+			local weldObject = Instance.new("Weld", arrowObject)
+			arrowObject.Anchored = false
+			arrowObject.Transparency = 1
+			weldObject.Part0 = arrowObject
+			weldObject.Part1 = g.character["Right Arm"]
+			arrowObject.CFrame = g.character["Right Arm"].CFrame
+				* CFrame.new(-0.6, -4, -1)
+				* CFrame.Angles(math.rad(-88), math.rad(5), 0)
+			weldObject.C0 = arrowObject.CFrame:inverse() * g.character["Right Arm"].CFrame
+			arrowObject.Parent = g.playerMouseFilter
+			g.tweenService:Create(arrowObject, TweenInfo.new(0.4), { Transparency = 0 }):Play()
+		end
+		g.stance:updateWalkSpeed()
+	end
+end
+
+function item:unaim()
+	if self.aiming then
+		g.interface:changeCursor("normal")
+		self.aiming = false
+		self:endCharge()
+		self.animationTracks.aiming:Stop()
+		g.tweenService:Create(g.camera, TweenInfo.new(0.4), { FieldOfView = g.stats.arbs.defaultFieldOfView }):Play()
+		g.tweenService:Create(g.humanoid, TweenInfo.new(0.4), { CameraOffset = g.stats.arbs.cameraOffset }):Play()
+		if self.stats.weaponType == "musket" then
+			coroutine.wrap(g.misc.request)("updateMusketPose", "", self.model)
+		elseif self.stats.weaponType == "pistol" then
+			coroutine.wrap(g.misc.request)("updatePistolPose", "", self.model)
+		elseif self.stats.weaponType == "crossbow" then
+			coroutine.wrap(g.misc.request)("updateCrossbowPose", "", self.model)
+		end
+		g.stance:updateWalkSpeed()
+	end
+end
+
+function item:reloadStart()
+	if self.drawn and self.content.ammoLoaded == 0 and not self.reloading then
+		if g.inventory:getBackpackNameItem(self.stats.weapon.ammoType) then
+			local lastReload = tick()
+			self.lastReload = lastReload
+			self.reloading = true
+			self:unaim()
+			self:unease()
+			
+			local reloadTime = self.stats.weapon.reloadTime
+			
+			if g.player.Status.Role == "Native" and self.stats.weaponType == "musket" then
+				reloadTime *= 1.2
+			end
+
+			if self.stats.weaponType == "musket" then
+				g.misc.request("updateMusketPose", "reload", self.model)
+			elseif self.stats.weaponType == "pistol" then
+				g.misc.request("updatePistolPose", "reload", self.model)
+			elseif self.stats.weaponType == "crossbow" then
+				g.misc.request("updateCrossbowPose", "reload", self.model)
+			end
+
+			self.animationTracks.reload:Play()
+
+			g.misc.request("reloadStart", self.object)
+
+			if g.storage.Snowstorm then
+				task.wait(reloadTime + 1)
+			else
+				task.wait(reloadTime)
+			end
+			self:reloadEnd(lastReload)
+		end
+	end
+end
+
+function item:reloadEnd(lastReload)
+	if self.reloading then
+
+		if lastReload and self.lastReload == lastReload then
+
+			self.reloading = false
+
+			local ammoAmount = self.stats.weapon.ammoAmount or 1  
+
+			if g.inventory:getBackpackAmountNameItem(self.stats.weapon.ammoType) < ammoAmount then
+				ammoAmount = g.inventory:getBackpackAmountNameItem(self.stats.weapon.ammoType)
+			end
+
+			if ammoAmount > 0 then
+				for i = 1, ammoAmount do
+					g.inventory:removeItem(g.inventory:getBackpackNameItem(self.stats.weapon.ammoType))
+				end
+			end
+
+
+			self.content.ammoLoaded = ammoAmount
+
+			if self.stats.weaponType == "musket" then
+				g.misc.request("updateMusketPose", "", self.model)
+			elseif self.stats.weaponType == "pistol" then
+				g.misc.request("updatePistolPose", "", self.model)
+			elseif self.stats.weaponType == "crossbow" then
+				g.misc.request("updateCrossbowPose", "", self.model)
+			end
+
+
+		elseif not self.drawn  then
+			self.reloading = false
+			self.animationTracks.reload:Stop()
+		end
+	end
+end
+
+function item:swing()
+	if
+		self.drawn
+		and not self.reloading
+		and tick() - self.lastSwing > self.stats.swingDebounceTime
+		and g.integrity.staminaAvailable
+	then
+		self:unaim()
+		self:endBlock()
+		self:unease()
+		self.lastSwing = tick()
+		local animationTrack = self.animationTracks["swing" .. math.random(1, 3)]
+		if self.animationTracks.swing then
+			self.animationTracks.swing:Play()
+		else
+			animationTrack:Play()
+		end
+		delay(0.1, function()
+			self.model.Blade.Swing.PlaybackSpeed = math.random(90, 110) / 100
+			self.model.Blade.Swing:Play()
+			g.integrity:depleteStamina(self.stats.swingStaminaCost)
+		end)
+		if self.hitConnection then
+			self.hitConnection:Disconnect()
+		end
+		self.hitConnection = self.model.Blade.Touched:connect(function(hitObject)
+			local player = g.misc.getPlayerFromPart(hitObject) or g.interaction:getOperable(hitObject)
+
+			if player then
+				self.hitConnection:Disconnect()
+				if g.misc.damageEntity(player, self, true, "9q)!W.jtW2(02QMqj3o]v[ao]tw)hV2f8IXqMJeLV~1y+-Cvx3cfy55fb~DQ0+QKT1e_3u]mWk66S_UnIsRjRgmm4BF3oFJ[Aqe21G!(JgtY)C") then
+					self.model.Blade.Hit:Play()
+				else
+					coroutine.wrap(g.misc.request)("hitBlockingPlayer", player)
+					self.lastSwing = tick() + 1
+					self.model.Blade.HitBlock:Play()
+					g.integrity:depleteStamina(g.stats.arbs.hitBlockStaminaCost)
+					task.wait(0.1)
+					self.animationTracks.hitBlock:Play()
+				end
+			end
+		end)
+		delay(self.stats.effectTime, function()
+			if self.hitConnection then
+				self.hitConnection:Disconnect()
+			end
+		end)
+	end
+end
+
+function item:useBandage()
+	if self.drawn then
+		if g.stance.bleeding or g.integrity.health < g.integrity.maxHealth then
+			coroutine.wrap(g.misc.request)("bandagePlayer", g.player)
+			self.animationTracks.use:Play()
+			self.animationTracks.drawn:Stop()
+		end
+	end
+end
+
+function item:toggleBlock()
+	if self.blocking then
+		self:endBlock()
+	else
+		self:startBlock()
+	end
+end
+
+function item:startBlock()
+	if self.drawn and not self.blocking and g.integrity.staminaAvailable then
+		self.blocking = true
+		coroutine.wrap(g.misc.request)("updateBlockingPlayer", true)
+		self.animationTracks.block:Play()
+		while task.wait(0.2) and self.blocking do
+			g.integrity:depleteStamina(5)
+			if g.integrity.stamina == 0 then
+				self:endBlock()
+				break
+			end
+		end
+	end
+end
+
+function item:endBlock()
+	if self.blocking then
+		self.blocking = false
+		coroutine.wrap(g.misc.request)("updateBlockingPlayer", false)
+		self.animationTracks.block:Stop()
+	end
+end
+
+function item:animateCutDown()
+	local lastCutDownStart = tick()
+	self.lastCutDownStart = lastCutDownStart
+	task.wait(0.13)
+	while g.interaction.interacting and lastCutDownStart == self.lastCutDownStart do
+		self.model.AxeHead.Hit.PlaybackSpeed = math.random(8, 13) / 10
+		self.model.AxeHead.Hit:Play()
+		task.wait(0.8)
+	end
+end
+
+function item:animateMining()
+	local lastMiningStart = tick()
+	self.lastMiningStart = lastMiningStart
+	task.wait(0.13)
+	while g.interaction.interacting and lastMiningStart == self.lastMiningStart do
+		self.model.PickaxeHead.Hit.PlaybackSpeed = math.random(8, 13) / 10
+		self.model.PickaxeHead.Hit:Play()
+		task.wait(0.8)
+	end
+end
+
+function item:enableTorch()
+	if not self.enabled then
+		self.enabled = true
+		coroutine.wrap(g.misc.request)("updateTorch", true, self.model)
+		g.tween:TweenNumber(self.model.Effects.PointLight, "Range", 20, 0.2, g.tween.Ease.In.Quad)
+		g.inventory.warmthBonus = g.inventory.warmthBonus + self.stats.warmthBonusLit
+	end
+end
+
+function item:disableTorch()
+	if self.enabled then
+		self.enabled = false
+		coroutine.wrap(g.misc.request)("updateTorch", false, self.model)
+		g.tween:TweenNumber(self.model.Effects.PointLight, "Range", 0, 0.1, g.tween.Ease.In.Linear)
+		g.inventory.warmthBonus = g.inventory.warmthBonus - self.stats.warmthBonusLit
+	end
+end
+
+function item:toggleTorch()
+	if tick() - self.lastToggle > self.stats.toggleDebounceTime and (self.stats.type == "lantern" or self.drawn) then
+		self.lastToggle = tick()
+		self.animationTracks.toggle:Play()
+		if self.enabled then
+			self:disableTorch()
+		else
+			self:enableTorch()
+		end
+	end
+end
+
+function item:enableCompass()
+	if not self.enabled then
+		self.enabled = true
+		local compassSpeed = 5
+		local camera = workspace.CurrentCamera
+		local lastRotation = 0
+		local directions = {
+			N = math.pi / 4 * 0,
+			NW = math.pi / 4 * 1,
+			W = math.pi / 4 * 2,
+			SW = math.pi / 4 * 3,
+			S = math.pi / 4 * 4,
+			SE = math.pi / 4 * 5,
+			E = math.pi / 4 * 6,
+			NE = math.pi / 4 * 7,
+		}
+
+		g.interface.gui.Compass:TweenSizeAndPosition(
+			UDim2.new(0, 250, 0, 250),
+			UDim2.new(0.5, -125, 0.5, -125),
+			"Out",
+			"Linear",
+			0.5,
+			true
+		)
+
+		spawn(function()
+			while self.enabled do
+				-- Camera declaration
+				local cameraLook = camera.CoordinateFrame.lookVector
+				local cameraLook = Vector3.new(cameraLook.x, 0, cameraLook.z).unit
+
+				-- Get rotation
+				local rotation = math.atan2(cameraLook.x, cameraLook.z) + math.pi
+				local rotationDifference = rotation - lastRotation
+
+				if rotationDifference > math.pi then
+					rotationDifference = rotationDifference - math.pi * 2
+				end
+				if rotationDifference < -math.pi then
+					rotationDifference = rotationDifference + math.pi * 2
+				end
+
+				rotation = lastRotation + rotationDifference * task.wait() * compassSpeed
+
+				if rotation < math.pi * 0 then
+					rotation = rotation + math.pi * 2
+				end
+				if rotation > math.pi * 2 then
+					rotation = rotation - math.pi * 2
+				end
+
+				lastRotation = rotation
+
+				-- Display directions
+				for direction, position in pairs(directions) do
+					local gui = g.interface.gui.Compass[direction]
+					position = rotation - position - math.pi / 2
+					local cosPos = math.cos(position)
+					local sinPos = math.sin(position)
+					local trans = (sinPos + 1) * 2 * (cosPos > 0 and 2 or 1)
+					gui.TextTransparency = trans
+					gui.TextStrokeTransparency = trans
+					gui.Position = UDim2.new(0.5 + cosPos / 1.7, 0, 0.5 + sinPos / 1.7, 0)
+				end
+			end
+		end)
+	end
+end
+
+function item:disableCompass()
+	if self.enabled then
+		self.enabled = false
+
+		g.interface.gui.Compass:TweenSizeAndPosition(
+			UDim2.new(0, 0, 0, 0),
+			UDim2.new(0.5, 0, 0.5, 0),
+			"Out",
+			"Linear",
+			0.5,
+			true
+		)
+
+		delay(0.1, function()
+			for i, v in pairs(g.interface.gui.Compass:GetChildren()) do
+				g.tweenService
+					:Create(v, TweenInfo.new(0.4), { TextTransparency = 1, TextStrokeTransparency = 1 })
+					:Play()
+			end
+		end)
+	end
+end
+
+function item:enableSpyglass()
+	if not self.enabled then
+		self.enabled = true
+		self.zoom = 20
+		g.tweenService:Create(workspace.CurrentCamera, TweenInfo.new(.5), { FieldOfView = self.zoom }):Play()
+		g.player.CameraMode = Enum.CameraMode.LockFirstPerson
+		g.interface.spyglassBlur.Size = 7
+		if not g.storage.Snowstorm.Value and not g.storage.Storm.Value then
+			g.lighting.FogEnd = 1500
+		end
+	end
+end
+
+function item:disableSpyglass()
+	if self.enabled then
+		self.enabled = false
+		g.tweenService:Create(workspace.CurrentCamera, TweenInfo.new(.5), { FieldOfView = g.stats.arbs.defaultFieldOfView }):Play()
+		g.player.CameraMode = Enum.CameraMode.Classic
+		g.interface.spyglassBlur.Size = 0
+		if g.storage.Snowstorm.Value then
+			g.lighting.FogEnd = 250
+		elseif g.storage.Storm.Value then
+			g.lighting.FogEnd = 250
+		else
+			g.lighting.FogEnd = 650
+		end
+	end
+end
+
+function item:waveFlag()
+	if self.animationTracks.waveFlag then
+		self.animationTracks.waveFlag:Stop()
+		self.animationTracks.waveFlag:Play()
+	end
+end
+
+function item:enableMusic()
+	if not self.enabled and self.drawn then
+		self.enabled = true
+		
+		local Resources = game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources")
+		local instrumentsStorage : Folder = Resources:FindFirstChild("Sounds"):FindFirstChild("Instruments")
+		local myStorage : Folder = instrumentsStorage:FindFirstChild(self.name)
+		
+		if myStorage then
+			local music = myStorage:FindFirstChild(tostring(self.currentSong))
+
+			if music then
+				g.misc.request("enableMusic", self.model, self.name, music)
+			else
+				self.currentsong = 1
+				return
+			end
+		end
+		
+		if self.animationTracks.playing then
+			self.animationTracks.playing:Play()
+		end
+	end
+end
+
+function item:disableMusic()
+	if self.enabled then
+		self.enabled = false
+		
+		g.misc.request("disableMusic", self.model, self.name)
+		
+		if self.animationTracks.playing then
+			self.animationTracks.playing:Stop()
+		end
+	end
+end
+
+function item:nextSong()
+	
+	if self.enabled then
+		return
+	end
+	
+	local Resources = game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources")
+	local instrumentsStorage : Folder = Resources:FindFirstChild("Sounds"):FindFirstChild("Instruments")
+	local myStorage : Folder = instrumentsStorage:FindFirstChild(self.name)
+	
+	if myStorage then
+		local totalSongs = #myStorage:GetChildren()
+
+		if self.currentSong < totalSongs then
+			self.currentSong += 1
+		else
+			self.currentSong = 1
+		end
+		
+		g.interface:updateMusic(myStorage:FindFirstChild(tostring(self.currentSong)))
+		
+	end
+end
+
+function item:prevSong()
+
+	if self.enabled then
+		return
+	end
+
+	local Resources = game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources")
+	local instrumentsStorage : Folder = Resources:FindFirstChild("Sounds"):FindFirstChild("Instruments")
+	local myStorage : Folder = instrumentsStorage:FindFirstChild(self.name)
+
+	if myStorage then
+		local totalSongs = #myStorage:GetChildren()
+
+		if self.currentSong > 1 then
+			self.currentSong -= 1
+		else
+			self.currentSong = totalSongs
+		end
+		
+		g.interface:updateMusic(myStorage:FindFirstChild(tostring(self.currentSong)))
+	end
+end
+
+function item:syncMusic()
+	local hitObj : Part = g.mouse.Target
+	
+	local Resources = game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources")
+	local instrumentsStorage : Folder = Resources:FindFirstChild("Sounds"):FindFirstChild("Instruments")
+	local myStorage : Folder = instrumentsStorage:FindFirstChild(self.name)
+	
+	if hitObj then
+		local char = nil
+		
+		if hitObj.Parent:FindFirstChild("Humanoid") then
+			char = hitObj.Parent
+		end
+		
+		if hitObj.Parent.Parent:FindFirstChild("Humanoid") then
+			char = hitObj.Parent.Parent
+		end
+		
+		if char then
+			g.misc.request("syncMusic", char, self.model, myStorage)
+		end
+	end
+end
+
+function item:zoomIn()
+	if self.enabled then
+		self.zoom = math.max(1, self.zoom - 10)
+		g.tweenService:Create(workspace.CurrentCamera, TweenInfo.new(0.5), { FieldOfView = self.zoom }):Play()
+	end
+end
+
+function item:zoomOut()
+	if self.enabled then
+		self.zoom = math.min(60, self.zoom + 10)
+		g.tweenService:Create(workspace.CurrentCamera, TweenInfo.new(0.5), { FieldOfView = self.zoom }):Play()
+	end
+end
+
+function item:enableWatch()
+	g.interface:showTime()
+end
+
+function item:disableWatch()
+	g.interface:hideTime()
+end
+
+function item:play()
+	if self.enabled then
+	end
+end
+
+return item
