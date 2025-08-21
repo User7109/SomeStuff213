@@ -1,0 +1,1373 @@
+local client = {}
+
+local ExploitPrevention = {
+	--[[
+	~~ I, CivGum made this, not Bura, please follow this layout and add to it if necessary ~~
+
+	[Player_Object] = { -- Added everytime a player joins
+		[weapon_Object] = {
+			["Unloaded"] = boolean
+			["Lastfire"] = boolean
+		},
+	},
+	
+	]]--
+}
+
+local reloadChecks = {
+    -- [Name] = reloadTime
+    ["Brown Bess musket"] = 10,
+    ["Ferguson Rifle"] = 10,
+    ["Kentucky rifle"] = 12,
+    ["Model 1777"] = 10,
+    ["Charleville musket"] = 9,
+    ["Charleville musket Old"] = 9,
+    ["Charleville musket (Bayonet)"] = 9,
+    ["Marksman rifle"] = 15,
+    ["Blunderbuss"] = 12,
+    ["Two-barrel musket"] = 15,
+    ["Semi Automatic Musket"] = 2,
+    ["Sharpe pistol"] = 6,
+    ["Long pistol"] = 6,
+    ["Dual pistol"] = 6,
+    ["Denix pistol"] = 9,
+    ["Duckfoot pistol"] = 10,
+    ["Hungarian axe pistol"] = 6,
+}
+
+local doubleShot = {
+	"Dual pistol",
+	"Two-barrel musket",
+}
+
+ExploitPrevention.__index = ExploitPrevention
+
+client.stats = require(game:GetService("ReplicatedStorage"):WaitForChild("TNF").Resources.Modules.Stats)
+client.QS_Delay = 5 -- Quick Switch Of Inv -> Tool Delay in Seconds
+
+
+client.start = function()
+	_G.physicsService:RegisterCollisionGroup("characters")
+	_G.physicsService:CollisionGroupSetCollidable("characters", "characters", false)
+
+	local function HandlePlayer(player)
+		if not player then
+			return
+		end
+		client.makePlayer(player)
+		ExploitPrevention[player] = {}
+
+		-- this is better at detecting if a character is loaded (coior was here)
+
+		if player.Character then
+			task.defer(client.makeCharacter, player)
+		else
+			player.CharacterAdded:Once(function()
+				task.defer(client.makeCharacter, player)
+			end)
+		end
+
+
+	end
+
+	_G.players.PlayerAdded:Connect(function(player)
+		HandlePlayer(player)
+	end)
+
+	for _, player in ipairs(game:GetService("Players"):GetPlayers()) do
+		task.spawn(HandlePlayer, player)
+	end
+
+	_G.players.PlayerRemoving:Connect(function(player)
+		client.removePlayer(player)
+	end)
+
+-- For CivGum to review, stops the game if I comment out 
+	function _G.remotes.ClientRequestRemote.OnServerInvoke(player, functionName, ...)
+		if not _G.requests[functionName] then -- Another Bura BS
+			--coroutine.wrap(_G.Hamburgeranticheat.PunishPlayer)(player, "Exploiting", " id: 3 ")
+			return nil
+		end
+
+		local playerExploitData = ExploitPrevention[player]
+		local canGo = true
+		local exploitId = 0
+		local length = 0
+		local reason = nil :: string
+
+		if functionName == "bandagePlayer" then -- ALL ANTI SELF HEAL IS HERE
+			local reciverTbl = {...}
+			local targetPlayer = reciverTbl[1]
+			if targetPlayer == player and player:FindFirstChild("Status").Downed.Value == true then -- and player:FindFirstChild("Status").Health.Value <= 0
+				canGo = false
+				exploitId = 3071849250
+				length = 1
+			end
+		--[[
+		OLD INVENTORY DEBOUNCE
+		elseif functionName == "equip" or functionName == "unequip" then -- functionName == "equip" or 
+			local inf = {...}
+			local s = require(game:GetService("ReplicatedStorage").TNF.Resources.Modules.Stats)
+			--print(s.items[inf[1].Name]["type"])
+			if s.items[inf[1].Name]["type"] ~= "clothing" then
+				if tick() - playerExploitData.LastDraw < client.QS_Delay then
+					canGo = false
+					reason = "Debounce"
+				else
+					print("Passed Check",tick()-playerExploitData.LastDraw,client.QS_Delay)
+				end
+				playerExploitData.LastDraw = tick()
+			end]]--
+		elseif functionName == "interact" then -- WIP
+			
+		end
+
+		if exploitId ~= 0 then
+			--client:Ban(player, length, exploitId)
+			if exploitId == 3071849250 then
+				--warn("RETURNING")
+				return
+			end
+			player:Kick(exploitId)
+		end
+		coroutine.wrap(client.sendToClient)(player, "checkRemoteRequests")
+			--print("Player: ", player.Name, "Function: ", functionName, "Args: ", {...})
+			--if functionName ~= "updateWarmth" then
+				--print("DOING",functionName)
+			--end
+			return _G.requests[functionName](player, ...)
+		end
+
+	_G.physicsService:RegisterCollisionGroup("characters", {})
+	_G.physicsService:RegisterCollisionGroup("zones", {})
+	_G.physicsService:CollisionGroupSetCollidable("characters", "zones", false)
+	_G.misc.setCollisionGroup(_G.mouseFilter.Zones, "zones")
+
+	_G.misc.setupFaction(_G.stats.arbs.mainGroupID)
+	--_G.misc.setupFaction(_G.stats.arbs.SubmainGroupID)
+end
+
+function client:Ban(player, length, ID)
+	--local Players = game:GetService("Players")
+	--Players:BanAsync({player.UserId}, length, tostring(ID), false, true)
+	print("Ban: ", player.Name, "Ban Length: ", length, "Ban ID: ", ID)
+end
+
+
+client.makePlayer = function(player)
+	local mouseFilterFolder = Instance.new("Folder")
+	mouseFilterFolder.Name = player.Name
+	mouseFilterFolder.Parent = _G.mouseFilter
+
+	_G.resources.Guis.MainGui:Clone().Parent = player.PlayerGui
+end
+
+client.removePlayer = function(player)
+
+end
+
+
+client.toggleCombatLog = function(player, CombatDuration)
+	if not tonumber(CombatDuration) then
+		CombatDuration = tonumber(CombatDuration)
+	end
+
+	if not player:FindFirstChild("Status") then
+		return
+	end
+
+	local PlayerStatusFolder = player:FindFirstChild("Status")
+
+	if PlayerStatusFolder.inCombat.Value == true then
+		PlayerStatusFolder.CombatLog.Value = CombatDuration
+		return
+	end
+
+	PlayerStatusFolder.inCombat.Value = true
+	PlayerStatusFolder.CombatLog.Value = CombatDuration
+
+	while true do
+		if PlayerStatusFolder.CombatLog.Value <= 0 then
+			PlayerStatusFolder.CombatLog.Value = 0
+			PlayerStatusFolder.inCombat.Value = false
+			break
+		end
+		PlayerStatusFolder.CombatLog.Value = PlayerStatusFolder.CombatLog.Value - 1
+		task.wait(1)
+	end
+end
+
+client.noSpecials = function(player)
+	task.spawn(function() -- Remove Everything and Fix Head Mesh
+		local character = player.Character
+		local head = character:WaitForChild("Head")
+		local SpecialCheck = head:FindFirstChildOfClass("SpecialMesh")
+
+		while not SpecialCheck do
+			task.wait(.1)
+			SpecialCheck = head:FindFirstChildOfClass("SpecialMesh")
+		end
+		task.wait(5) -- safety
+		SpecialCheck:Destroy()
+		local new_mesh = Instance.new("SpecialMesh")
+		new_mesh.Parent = head
+		new_mesh.MeshType = Enum.MeshType.Head
+		head.Size = Vector3.new(1.25,1.25,1.25)
+
+		for _, accessory in ipairs(character:GetChildren()) do
+			if accessory:IsA("Accessory") or accessory:IsA("ShirtGraphic") then
+				accessory:Destroy()
+			end
+		end
+
+		for _, part in ipairs(character:GetChildren()) do
+			if part:IsA("MeshPart") or part:IsA("Part") then
+				if part:FindFirstChildOfClass("SpecialMesh") then
+					if part.Name ~= "Head" then
+						part:FindFirstChildOfClass("SpecialMesh"):Destroy()
+					end
+				end
+			end
+		end
+	end)
+end
+
+client.makeCharacter = function(player : Player)
+	if not player or not player.Character then
+		return print(player, player.Character)
+	end
+
+	player.Character:WaitForChild("Humanoid").WalkSpeed = 0
+	
+	
+	--task.wait(2)
+	--if player and player.Character   then
+	client.setPlayerFolders(player)
+	client.setBodyColor(player)
+	client.noSpecials(player)
+
+	-- _G.misc.setCollisionGroup(player.Character, "characters")
+
+	player.Character.Humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	--end
+end
+
+client.AdminUsed = function(embedcolor,message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1373095974205128806/x_G8LO4_8jeUCoKXDxSJicxOqwZCjciDIawjr2Hn5FL8LgPah3jTM-fuyuWIm0M7PTy9",
+		["title"] = "Command Used - <t:" .. os.time() .. ":f>",
+		["description"] = message,
+		["embedcolor"] = embedcolor
+	})
+end
+
+client.chestFound = function(embedcolor, message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1407173660464381982/kg6YutuvNeKpMQssx4omn4ZEm2gpTB_4dgXLtMsDgf2snxaBKEuFShFDwN6L9E5n5gG7",
+		["title"] = "Chest Found",
+		["description"] = message,
+		["embedcolor"] = embedcolor
+	})
+end
+
+client.chestItemSold = function(embedcolor, message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1407173660464381982/kg6YutuvNeKpMQssx4omn4ZEm2gpTB_4dgXLtMsDgf2snxaBKEuFShFDwN6L9E5n5gG7",
+		["title"] = "Chest Item Sold",
+		["description"] = message,
+		["embedcolor"] = embedcolor
+	})
+end
+
+client.IslandCaptured = function(embedcolor,message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1404237570543583353/AUCj3QY_aDxwJiCoBhw8ChwjuMKULoKkc04O6JQ9V7nJ3RvaLZ5cLt6O5GdUTVxMNk1b",
+		["title"] = "Island Captured - <t:" .. os.time() .. ":f>",
+		["description"] = message,
+		["embedcolor"] = embedcolor
+	})
+end
+
+client.ChestItemTaken = function(message) 
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1373096199854231582/B1YGmN-LqEBCRK1rerq6R7WIpkar7boe5t-vXP7nQOttg8tbVNM90yyEVFIAynAKj3pz",
+		["title"] = "Chest Item Taken - <t:" .. os.time() .. ":f>",
+		["description"] = message,
+		["embedcolor"] = 16422460
+	})
+end
+
+client.TradeItemPurchased = function(message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1399997905288560773/ohb-sMXGRhp475Q2eHVyZKtmS2-yvGdM1dmB_9aOzgYw642SDdKZYsc3D4XQOpCiyzhp",
+		["title"] = "Trade Item Purchased - <t:" .. os.time() .. ":f>",
+		["description"] = message,
+		["embedcolor"] = 2660162
+	})
+end
+
+client.AlertSuspiciousDataActivity = function(message)
+	_G.webhookmanager.PostWebhookMessage({
+		["webhookurl"] = "https://webhook.lewisakura.moe/api/webhooks/1373096498153132102/S9__JgIIODypeMG88RCkyx-GD-45Uny8OyJIP68lKhnZgFk3PrMPW32xs33yo-VWy8FF",
+		["title"] = "Suspicious Data Activity - <t:" .. os.time() .. ":f>",
+		["description"] = message,
+		["embedcolor"] = 12137035
+	})
+end
+
+
+client.sendToOtherClients = function(player, functionName, ...)
+	for i, v in pairs(_G.players:GetPlayers()) do
+		if v ~= player then
+			client.sendToClient(v, functionName, ...)
+		end
+	end
+end
+
+client.sendToAllClients = function(functionName, ...)
+	_G.remotes.ServerUpdateRemote:FireAllClients(functionName, ...)
+end
+
+client.sendToClient = function(player, functionName, ...)
+	_G.remotes.ServerUpdateRemote:FireClient(player, functionName, ...)
+end
+
+client.receiveFromClient = function(player, functionName, ...)
+	return _G.remotes.ServerRequestRemote:InvokeClient(player, functionName, ...)
+end
+
+client.setPlayerFolders = function(player)
+	print('called setting player foldres')
+	if not player or not player.Character then
+		return print(player, player.Character)
+	end
+
+	print("setting player folders")
+	local attachmentsFolder = Instance.new("Folder")
+	attachmentsFolder.Name = "Attachments"
+
+	local statusFolder = Instance.new("Folder")
+	statusFolder.Name = "Status"
+
+	local combatLogValue = Instance.new("IntValue")
+	combatLogValue.Name = "CombatLog"
+	combatLogValue.Value = 0
+	combatLogValue.Parent = statusFolder
+
+	local preparingValue = Instance.new("BoolValue")
+	preparingValue.Name = "Preparing"
+	preparingValue.Value = false
+	preparingValue.Parent = statusFolder
+
+	local playingValue = Instance.new("BoolValue")
+	playingValue.Name = "Playing"
+	playingValue.Value = false
+	playingValue.Parent = statusFolder
+
+	local leavingValue = Instance.new("BoolValue")
+	leavingValue.Name = "Leaving"
+	leavingValue.Value = false
+	leavingValue.Parent = statusFolder
+
+	local inCombatValue = Instance.new("BoolValue")
+	inCombatValue.Name = "inCombat"
+	inCombatValue.Value = false
+	inCombatValue.Parent = statusFolder
+
+	local musicBuffValue = Instance.new("BoolValue")
+	musicBuffValue.Name = "MusicBuff"
+	musicBuffValue.Value = false
+	musicBuffValue.Parent = statusFolder
+
+	local lastGameVersionValue = Instance.new("StringValue")
+	lastGameVersionValue.Name = "LastGameVersion"
+	lastGameVersionValue.Value = ""
+	lastGameVersionValue.Parent = statusFolder
+
+	local lastDailyRewardValue = Instance.new("IntValue")
+	lastDailyRewardValue.Value = 0
+	lastDailyRewardValue.Name = "LastDailyReward"
+	lastDailyRewardValue.Parent = statusFolder
+	
+	local lastItemEquippedTimeValue = Instance.new("IntValue")
+	lastItemEquippedTimeValue.Value = 0
+	lastItemEquippedTimeValue.Name = "lastItemEquippedTime"
+	lastItemEquippedTimeValue.Parent = statusFolder
+	
+	local lastBankItemStoreTimeValue = Instance.new("IntValue")
+	lastBankItemStoreTimeValue.Value = 0
+	lastBankItemStoreTimeValue.Name = "lastBankItemStoreTime"
+	lastBankItemStoreTimeValue.Parent = statusFolder
+	
+	local lastChestItemStoreTimeValue = Instance.new("IntValue")
+	lastChestItemStoreTimeValue.Value = 0
+	lastChestItemStoreTimeValue.Name = "lastChestItemStoreTime"
+	lastChestItemStoreTimeValue.Parent = statusFolder
+	
+	local poundsValue = Instance.new("IntValue")
+	poundsValue.Name = "Pounds"
+	poundsValue.Value = 0
+	poundsValue.Parent = statusFolder
+
+	local SavePlayerDataState = Instance.new("BoolValue")
+	SavePlayerDataState.Name = "SavePlayerData"
+	SavePlayerDataState.Value = true
+	SavePlayerDataState.Parent = statusFolder
+
+	local GodModeState = Instance.new("BoolValue")
+	GodModeState.Name = "GodMode"
+	GodModeState.Value = false
+	GodModeState.Parent = statusFolder
+
+	local TotalDetectionsValue = Instance.new("IntValue")
+	TotalDetectionsValue.Name = "TotalDetections"
+	TotalDetectionsValue.Value = 0
+	TotalDetectionsValue.Parent = statusFolder
+
+	local titleValue = Instance.new("StringValue")
+	titleValue.Name = "Title"
+	titleValue.Value = ""
+	titleValue.Parent = statusFolder
+
+	local bankPoundsValue = Instance.new("IntValue")
+	bankPoundsValue.Name = "BankPounds"
+	bankPoundsValue.Value = 0
+	bankPoundsValue.Parent = statusFolder
+
+	local bankStorageSpace = Instance.new("IntValue")
+	bankStorageSpace.Name = "BankStorageSpace"
+	bankStorageSpace.Value = 0
+	bankStorageSpace.Parent = statusFolder
+
+	local tradingPostValue = Instance.new("ObjectValue")
+	tradingPostValue.Name = "TradingPost"
+	tradingPostValue.Value = nil
+	tradingPostValue.Parent = statusFolder
+
+	local hairColor = Instance.new("IntValue")
+	hairColor.Name = "HairColor"
+	hairColor.Value = 0
+	hairColor.Parent = statusFolder
+
+	local hairValue = Instance.new("IntValue")
+	hairValue.Name = "Hair"
+	hairValue.Value = 0
+	hairValue.Parent = statusFolder
+
+	local facialHairValue = Instance.new("IntValue")
+	facialHairValue.Name = "FacialHair"
+	facialHairValue.Value = 0
+	facialHairValue.Parent = statusFolder
+
+	local bountyValue = Instance.new("IntValue")
+	bountyValue.Name = "Bounty"
+	bountyValue.Value = 0
+	bountyValue.Parent = statusFolder
+
+	local factionValue = Instance.new("IntValue")
+	factionValue.Name = "Faction"
+	factionValue.Value = 0
+	factionValue.Parent = statusFolder
+
+	local spawnPositionValue = Instance.new("Vector3Value")
+	spawnPositionValue.Name = "SpawnPosition"
+	spawnPositionValue.Value = Vector3.new(0, 0, 0)
+	spawnPositionValue.Parent = statusFolder
+
+	local lastSafePositionValue = Instance.new("Vector3Value")
+	lastSafePositionValue.Name = "LastSafePosition"
+	lastSafePositionValue.Value = Vector3.new(0, 0, 0)
+	lastSafePositionValue.Parent = statusFolder
+	
+	local resetLastSafePositionValue = Instance.new("BoolValue")
+	resetLastSafePositionValue.Name = "ResetLastSafePosition"
+	resetLastSafePositionValue.Value = false
+	resetLastSafePositionValue.Parent = statusFolder
+
+
+	local lastCaughtFishValue = Instance.new("StringValue")
+	lastCaughtFishValue.Name = "LastCaughtFish"
+	lastCaughtFishValue.Parent = statusFolder
+	
+	local currentlyTrapped = Instance.new("BoolValue")
+	currentlyTrapped.Name = "CurrentlyTrapped"
+	currentlyTrapped.Parent = statusFolder
+	currentlyTrapped.Value = false
+		
+	local Slowed = Instance.new("BoolValue")
+	Slowed.Name = "Slowed"
+	Slowed.Parent = statusFolder
+	Slowed.Value = false
+
+	local roleValue = Instance.new("StringValue")
+	roleValue.Name = "Role"
+	roleValue.Value = ""
+	roleValue.Parent = statusFolder
+
+	local Promocodes = Instance.new("Folder")
+	Promocodes.Name = "Promocodes"
+	Promocodes.Parent = statusFolder
+
+	local QuestsFolder = Instance.new("Folder")
+	QuestsFolder.Name = "Quests"
+	QuestsFolder.Parent = statusFolder
+
+	local currentQuestvalue = Instance.new("IntValue")
+	currentQuestvalue.Name = "currentQuest"
+	currentQuestvalue.Value = 0
+	currentQuestvalue.Parent = QuestsFolder
+
+	local questDurationValue = Instance.new("IntValue")
+	questDurationValue.Name = "currentQuestduration"
+	questDurationValue.Value = 0
+	questDurationValue.Parent = QuestsFolder
+
+	local questTakenValue = Instance.new("BoolValue")
+	questTakenValue.Name = "QuestTaken"
+	questTakenValue.Value = false
+	questTakenValue.Parent = QuestsFolder
+
+	local totalQuestsCompletedValue = Instance.new("IntValue")
+	totalQuestsCompletedValue.Name = "currentQuestduration"
+	totalQuestsCompletedValue.Value = 0
+	totalQuestsCompletedValue.Parent = QuestsFolder
+
+	local questTreeLogsCollectedValue = Instance.new("IntValue")
+	questTreeLogsCollectedValue.Name = "TreeLogsCollected"
+	questTreeLogsCollectedValue.Value = 0
+	questTreeLogsCollectedValue.Parent = QuestsFolder
+
+	local deathNoteMessageValue = Instance.new("StringValue")
+	deathNoteMessageValue.Name = "DeathNoteMessage"
+	deathNoteMessageValue.Value = ""
+	deathNoteMessageValue.Parent = statusFolder
+
+	local TutorialFolder = Instance.new("Folder")
+	TutorialFolder.Name = "Tutorial"
+	TutorialFolder.Parent = statusFolder
+
+	local TutorialStageValue = Instance.new("IntValue")
+	TutorialStageValue.Name = "TutorialStage"
+	TutorialStageValue.Value = 0
+	TutorialStageValue.Parent = TutorialFolder
+
+	local TutorialStartedValue = Instance.new("BoolValue")
+	TutorialStartedValue.Name = "TutorialStarted"
+	TutorialStartedValue.Value = false
+	TutorialStartedValue.Parent = TutorialFolder
+
+	local tutorialTreeLogsCollectedValue = Instance.new("IntValue")
+	tutorialTreeLogsCollectedValue.Name = "TreeLogsCollected"
+	tutorialTreeLogsCollectedValue.Value = 0
+	tutorialTreeLogsCollectedValue.Parent = TutorialFolder
+
+	local downedValue = Instance.new("BoolValue")
+	downedValue.Name = "Downed"
+	downedValue.Value = false
+	downedValue.Parent = statusFolder
+
+	local respawningValue = Instance.new("BoolValue")
+	respawningValue.Name = "Respawning"
+	respawningValue.Value = true
+	respawningValue.Parent = statusFolder
+
+	local lastRespawnValue = Instance.new("NumberValue")
+	lastRespawnValue.Name = "LastRespawn"
+	lastRespawnValue.Value = 0
+	lastRespawnValue.Parent = statusFolder
+
+	local lastDownedValue = Instance.new("NumberValue")
+	lastDownedValue.Name = "LastDowned"
+	lastDownedValue.Value = 0
+	lastDownedValue.Parent = statusFolder
+
+	local sleepingValue = Instance.new("BoolValue")
+	sleepingValue.Name = "Sleeping"
+	sleepingValue.Value = false
+	sleepingValue.Parent = statusFolder
+
+	local draggedValue = Instance.new("BoolValue")
+	draggedValue.Name = "Dragged"
+	draggedValue.Value = false
+	draggedValue.Parent = statusFolder
+
+	local draggerValue = Instance.new("ObjectValue")
+	draggerValue.Name = "Dragger"
+	draggerValue.Value = nil
+	draggerValue.Parent = statusFolder
+
+	player.Character:WaitForChild("Health"):Destroy()
+
+	local healthValue = Instance.new("DoubleConstrainedValue")
+	healthValue.Name = "Health"
+	healthValue.MinValue = 0
+	healthValue.MaxValue = 100
+	healthValue.Value = healthValue.MaxValue
+	healthValue.Parent = statusFolder
+
+	local bleedValue = Instance.new("DoubleConstrainedValue")
+	bleedValue.Name = "Bleed"
+	bleedValue.MinValue = 0
+	bleedValue.MaxValue = 100
+	bleedValue.Value = 0
+	bleedValue.Parent = statusFolder
+
+	local blockingValue = Instance.new("BoolValue")
+	blockingValue.Name = "Blocking"
+	blockingValue.Value = false
+	blockingValue.Parent = statusFolder
+
+	local hungerValue = Instance.new("IntValue")
+	hungerValue.Name = "Hunger"
+	hungerValue.Value = _G.stats.arbs.defaultMaxHunger
+	hungerValue.Parent = statusFolder
+
+	local warmthValue = Instance.new("IntValue")
+	warmthValue.Name = "Warmth"
+	warmthValue.Value = _G.stats.arbs.defaultMaxWarmth
+	warmthValue.Parent = statusFolder
+
+	local teleportingPlaceValue = Instance.new("IntValue")
+	teleportingPlaceValue.Name = "TeleportingPlace"
+	teleportingPlaceValue.Value = 0
+	teleportingPlaceValue.Parent = statusFolder
+
+	local lastCFrameValue = Instance.new("CFrameValue")
+	lastCFrameValue.Name = "LastCFrame"
+	lastCFrameValue.Value = CFrame.new(0, 0, 0)
+	lastCFrameValue.Parent = statusFolder
+
+	local lastChat = Instance.new("NumberValue")
+	lastChat.Name = "LastChat"
+	lastChat.Value = 0
+	lastChat.Parent = statusFolder
+
+	local LoadedWeaponsFolder = Instance.new("Folder")
+	LoadedWeaponsFolder.Name = "LoadedWeapons"
+	LoadedWeaponsFolder.Parent = statusFolder
+
+	local zonesFolder = Instance.new("Folder")
+	zonesFolder.Name = "Zones"
+	zonesFolder.Parent = statusFolder
+
+	for i, v in pairs(_G.zones:GetChildren()) do
+		local zoneValue = Instance.new("BoolValue")
+		zoneValue.Name = v.Name
+		zoneValue.Value = false
+		zoneValue.Parent = zonesFolder
+	end
+
+	local itemsFolder = Instance.new("Folder")
+	itemsFolder.Name = "Items"
+	itemsFolder.Parent = statusFolder
+
+	local bankItems = Instance.new("Folder")
+	bankItems.Name = "BankItems"
+	bankItems.Parent = statusFolder
+
+	local titlesFolder = Instance.new("Folder")
+	titlesFolder.Name = "TitlesFolder"
+	titlesFolder.Parent = statusFolder
+
+	local bleedParticle = _G.objects.Bleed:Clone()
+	bleedParticle.Parent = player.Character:WaitForChild("Torso")
+
+	healthValue.Changed:Connect(function()
+		downedValue.Value = healthValue.Value <= 0
+		if downedValue.Value then
+			lastDownedValue.Value = tick()
+		end
+	end)
+
+	attachmentsFolder.Parent = player.Character
+	statusFolder.Parent = player
+end
+
+client.setBodyColor = function(player)
+	if not player or not player.Character then
+		return
+	end
+
+	for i, v in pairs(player.Character:GetChildren()) do
+		if (v:IsA("Accessory") and not v.Handle:FindFirstChild("HairAttachment")) or v:IsA("CharacterMesh") then
+			v:Destroy()
+		end
+	end
+
+	player.Character.ChildAdded:Connect(function(child)
+		if (child:IsA("Accessory") and not child.Handle:FindFirstChild("HairAttachment")) or child:IsA("CharacterMesh") then
+			task.defer(child.Destroy, child)
+		end
+	end)
+
+	local bodyColor = player.Character:WaitForChild("Body Colors").HeadColor
+	local bodyColorValid = _G.misc.find(_G.stats.arbs.bodyColors, tostring(bodyColor))
+	local bodyPartsNames =
+		{ "LeftArmColor", "LeftLegColor", "RightArmColor", "RightLegColor", "TorsoColor", "HeadColor" }
+	for i, v in pairs(bodyPartsNames) do
+		if bodyColorValid then
+			player.Character["Body Colors"][v] = bodyColor
+		else
+			player.Character["Body Colors"][v] = BrickColor.new(_G.stats.arbs.defaultBodyColor)
+		end
+	end
+
+	local shirt = player.Character:FindFirstChild("Shirt")
+	if shirt then
+		shirt:Destroy()
+	end
+
+	local pants = player.Character:FindFirstChild("Pants")
+	if pants then
+		pants:Destroy()
+	end
+
+	local tshirt = player.Character:FindFirstChildOfClass("ShirtGraphic")
+	if tshirt then
+		tshirt:Destroy()
+	end
+
+	_G.objects.GrassSteps:Clone().Parent = player.Character:WaitForChild("Right Leg")
+	_G.objects.GrassSteps:Clone().Parent = player.Character:WaitForChild("Left Leg")
+	_G.objects.Breath:Clone().Parent = player.Character["Head"]
+
+	local RunningSound = Instance.new("Sound")
+	RunningSound.Name = "Running"
+	RunningSound.Parent = player.Character:WaitForChild("Head")
+
+	_G.objects.Grab:Clone().Parent = player.Character:WaitForChild("Left Arm")
+	_G.objects.Drop:Clone().Parent = player.Character:WaitForChild("Left Arm")
+end
+
+client.setupRoleData = function(player: Player, roleName, resetPosition)
+	task.spawn(function()
+		client.sendToAllClients("addPlayer", player)
+	end)
+
+	--> Load the player's data with their role for all future data requests.
+	_G.DataWrapper.LoadPlayerProfile(player, roleName)
+	
+	local HasClothing = false
+	local SuspiciousBackpackActivityFound = false 
+	local SuspiciousBankSpaceActivityFound = false 
+	local SuspiciousBankItemsActivityFound = false
+	
+	local Backpack = _G.DataWrapper.Players.Character.GetBackpack(player)
+	local Equipment = _G.DataWrapper.Players.Character.GetEquipment(player)
+	local Hair = _G.DataWrapper.Players.Character.GetHair(player)
+	local BankItems = _G.DataWrapper.Players.Bank.GetItems(player)
+	local ClaimedPromoCodes = _G.DataWrapper.Players.Rewards.GetAppliedPromoCodes(player)
+	local GivenStarterItems = _G.DataWrapper.Players.Character.GivenStarterItems(player)
+	local LastSafePosition 
+	
+	
+	if resetPosition then
+		LastSafePosition = false 
+	else 
+		LastSafePosition = _G.DataWrapper.Players.Character.GetPosition(player)
+	end 
+	
+	local LastDailyReward = _G.DataWrapper.Players.Rewards.GetLastDailyReward(player)
+	local BankStorageSpace = _G.DataWrapper.Players.Bank.GetStorageSpace(player)
+	local Pounds = _G.DataWrapper.Players.Character.GetPounds(player)
+	local BankPounds = _G.DataWrapper.Players.Bank.GetPounds(player)
+	local Hair, FacialHair, HairColor = _G.DataWrapper.Players.Character.GetHair(player)
+	local Health = _G.DataWrapper.Players.Character.GetHealth(player)
+	local Hunger = _G.DataWrapper.Players.Character.GetHunger(player)
+	local TutorialStage = _G.DataWrapper.Players.GetCurrentTutorialStage(player)
+	local TutorialCompleted = _G.DataWrapper.Players.GetTutorialCompletedState(player)
+	
+	for itemName, itemAmount in pairs(Backpack) do
+		if not _G.misc.find(_G.stats.arbs.bannedItems, itemName) then
+			if _G.stats.items[itemName] then
+				local backpackitemstats = _G.stats.items[itemName]
+				
+				for i = 1, itemAmount, 1 do
+					_G.item.add(player, itemName)
+				end
+				
+				if backpackitemstats.TradeItemLogged == true and SuspiciousBackpackActivityFound == false then
+					if itemAmount>=8 then
+						SuspiciousBackpackActivityFound = true
+						client.AlertSuspiciousDataActivity("Player UserName: " .. player.Name .. "\nPlayer UserId: "..tostring(player.UserId).."\nDetection Id :1")
+						_G.misc.request("banPlayer", tostring(player.Name), "Duping // Detection Id 1")
+					end
+				end
+			else
+				warn(
+					string.format(
+						"[ClientLoader] Item %q was found in %s's backpack, but could not be found in stats.",
+						itemName,
+						player.Name
+					)
+				)
+			end
+		else
+			warn(
+				string.format(
+					"[ClientLoader] Item %q was removed from %s's backpack because it is banned.",
+					itemName,
+					player.Name
+				)
+			)
+		end
+	end
+
+	for itemName, itemAmount in pairs(Equipment) do
+		if not _G.misc.find(_G.stats.arbs.bannedItems, itemName) then
+			if _G.stats.items[itemName] then
+				local itemstats = _G.stats.items[itemName]
+
+				if itemstats.type == "clothing" then
+					HasClothing = true
+				end
+				
+				for i = 1, itemAmount, 1 do
+					_G.item.add(player, itemName, not _G.item.getFirstEquipped(player, itemName))
+				end
+			else
+				warn(
+					string.format(
+						"[ClientLoader] Item %q was found in %s's equipment, but could not be found in stats.",
+						itemName,
+						player.Name
+					)
+				)
+			end
+		else
+			warn(
+				string.format(
+					"[ClientLoader] Item %q was removed from %s's equipment because it is banned.",
+					itemName,
+					player.Name
+				)
+			)
+		end
+	end
+
+	if HasClothing == false then
+		local shirtObject = player.Character:FindFirstChild("Shirt") or Instance.new("Shirt", player.Character)
+		local pantsObject = player.Character:FindFirstChild("Pants") or Instance.new("Pants", player.Character)
+		shirtObject.Name = "Shirt"
+		shirtObject.ShirtTemplate = _G.stats.arbs.assetLink .. _G.stats.arbs.defaultclothing.ShirtsID
+
+		pantsObject.Name = "Pants"
+		pantsObject.PantsTemplate = _G.stats.arbs.assetLink .. _G.stats.arbs.defaultclothing.PantsID
+	end
+
+	for itemName, itemAmount in pairs(BankItems) do
+		if not _G.misc.find(_G.stats.arbs.bannedItems, itemName) then
+			if _G.stats.items[itemName] then
+				local bankitemstats = _G.stats.items[itemName]
+
+				for i = 1, itemAmount, 1 do
+					_G.item.addBank(player, itemName)
+				end
+				
+				if bankitemstats.TradeItemLogged == true and SuspiciousBankItemsActivityFound == false then
+					if itemAmount>=8 then
+						SuspiciousBankItemsActivityFound = true
+						client.AlertSuspiciousDataActivity("Player UserName: " .. player.Name .. "\nPlayer UserId: "..tostring(player.UserId).."\nDetection Id :2")
+					end
+				end
+			else
+				warn(
+					string.format(
+						"[ClientLoader] Item %q was found in %s's bank, but could not be found in stats.",
+						itemName,
+						player.Name
+					)
+				)
+			end
+		else
+			warn(
+				string.format(
+					"[ClientLoader] Item %q was removed from %s's bank because it is banned.",
+					itemName,
+					player.Name
+				)
+			)
+		end
+	end
+
+	if ClaimedPromoCodes then
+		for _, claimedCode in ipairs(ClaimedPromoCodes or {}) do
+			if _G.Promocodes.Codes[claimedCode] then
+				local ClaimedPromoCode = Instance.new("BoolValue")
+				ClaimedPromoCode.Name = claimedCode
+				ClaimedPromoCode.Value = true
+				ClaimedPromoCode.Parent = player.Status.Promocodes
+			end
+		end
+	end
+
+	
+	if LastDailyReward then
+		player.Status:WaitForChild("LastDailyReward").Value = LastDailyReward
+	end
+
+	if BankStorageSpace then
+		player.Status:WaitForChild("BankStorageSpace").Value = BankStorageSpace
+	else
+		player.Status:WaitForChild("BankStorageSpace").Value = 100
+	end
+	
+	if BankStorageSpace then 
+	if BankStorageSpace>=2500 and SuspiciousBankSpaceActivityFound == false then
+		SuspiciousBankSpaceActivityFound = true
+		client.AlertSuspiciousDataActivity("Player UserName: " .. player.Name .. "\nPlayer UserId: "..tostring(player.UserId).."\nDetection Id :3")
+		end
+	end
+
+	
+	if Pounds then 
+	 if Pounds < _G.stats.arbs.maxPounds then 
+		player.Status:WaitForChild("Pounds").Value = Pounds 
+	else 
+		player.Status:WaitForChild("Pounds").Value =  _G.stats.arbs.maxPounds 
+		end
+	end
+	
+	if BankPounds then 
+	 if BankPounds < _G.stats.arbs.maxBankPounds then 
+		player.Status:WaitForChild("BankPounds").Value = BankPounds 
+	else 
+		player.Status:WaitForChild("BankPounds").Value =  _G.stats.arbs.maxBankPounds 
+		end
+	end
+
+	player.Status:WaitForChild("Hunger").Value = Hunger
+	player.Status:WaitForChild("Health").Value = Health
+
+	if Hair and FacialHair and HairColor then
+		player.Status:WaitForChild("Hair").Value = Hair
+		player.Status:WaitForChild("FacialHair").Value = FacialHair
+		player.Status:WaitForChild("HairColor").Value = HairColor
+	end
+
+	if LastSafePosition then
+		player.Status:WaitForChild("LastSafePosition").Value = LastSafePosition
+	end
+
+	player.Character.Parent = _G.characters
+
+	local labelGui = _G.guis.LabelBillboardGui:Clone()
+	labelGui.Parent = player.Character.Head
+	labelGui.Adornee = player.Character.Head
+
+	labelGui.NameLabel.Text = player.Name
+	labelGui.NameLabel.TextColor3 = _G.stats.roles[player.Status.Role.Value].color
+	
+	if player:IsInGroup(34931723) then
+		local titles = {}
+		titles = {"STAFF | "}
+
+		for _, titleName in ipairs(titles) do
+			local newTitle = Instance.new("StringValue")
+			newTitle.Name = titleName
+			newTitle.Value = titleName
+			newTitle.Parent = player.Status.TitlesFolder
+		end
+	end
+	
+	if player.UserId == 115574212 or player.UserId == 1172130635 or player.UserId == 541674141 then
+		local titles = {}
+		
+		titles = {"GOD KING | "}
+		
+		for _, titleName in ipairs(titles) do
+			local newTitle = Instance.new("StringValue")
+			newTitle.Name = titleName
+			newTitle.Value = titleName
+			newTitle.Parent = player.Status.TitlesFolder
+		end
+	end
+
+	if player:IsInGroup(34464523) then
+		local titles = {}
+		local rankInGroup = player:GetRankInGroup(34464523)
+
+		if rankInGroup == 253 then
+			titles = {"DEVELOPER | "}
+		end
+
+		for _, titleName in ipairs(titles) do
+			local newTitle = Instance.new("StringValue")
+			newTitle.Name = titleName
+			newTitle.Value = titleName
+			newTitle.Parent = player.Status.TitlesFolder
+		end
+	end
+	
+	if player:IsInGroup(158989249) then
+		local rank = player:GetRankInGroup(158989249)
+		local titles = {}
+
+		if rank >= 255 then
+			titles = {"King", "His Majesty"}
+		elseif rank >= 250 then
+			titles = {"Prince", "Lemonade Lord"}
+		elseif rank >= 200 then
+			titles = {"Duke", "Lord"}
+		elseif rank >= 190 then
+			titles = {"Marquess", "Lord"}
+		elseif rank >= 180 then
+			titles = {"Earl", "Count", "Lord"}
+		elseif rank >= 170 then
+			titles = {"Viscount", "Lord"}
+		elseif rank >= 160 then
+			titles = {"Baron", "Sir"}
+		elseif rank >= 150 then
+			titles = {"Baronet", "Sir"}
+		elseif rank >= 140 then
+			titles = {"Sir"}
+		elseif rank >= 130 then
+			titles = {"Mr."}
+		elseif rank >= 120 then
+			titles = {"Page"}
+		else
+			titles = {"Commoner"}
+		end
+
+		-- Create StringValue for each title
+		for _, titleName in ipairs(titles) do
+			local newTitle = Instance.new("StringValue")
+			newTitle.Name = titleName
+			newTitle.Value = titleName
+			newTitle.Parent = player.Status.TitlesFolder
+		end
+	end
+
+
+	_G.misc.checkPlayerFaction(player)
+
+	task.spawn(function()
+		while task.wait(60) and player and player.Parent do
+			_G.misc.checkPlayerFaction(player)
+		end
+	end)
+
+	if
+		_G.stats.places[game.PlaceId].conquering
+		and player.Status.Faction.Value ~= 0
+		and _G.storage.Islands[game.PlaceId].Faction.Value == player.Status.Faction.Value
+	then
+		local spawnObject = _G.mouseFilter.Spawns.Conqueror["1"]
+		player.Status.SpawnPosition.Value = Vector3.new(
+			math.random(
+				spawnObject.Position.X - (spawnObject.Size.X / 2),
+				spawnObject.Position.X + (spawnObject.Size.X / 2)
+			),
+			spawnObject.Position.Y + 3.5,
+			math.random(
+				spawnObject.Position.Z - (spawnObject.Size.Z / 2),
+				spawnObject.Position.Z + (spawnObject.Size.Z / 2)
+			)
+		)
+	else
+		local spawnModel = _G.mouseFilter.Spawns[roleName]
+		if roleName == "Colonist" then
+			local factionVal = player.Status.Faction.Value
+			if factionVal == 0 then
+				spawnModel = _G.mouseFilter.Spawns["Unfactioned"]
+			end
+		end
+		local spawnObject = spawnModel[math.random(1, #spawnModel:GetChildren())]
+		player.Status.SpawnPosition.Value = Vector3.new(
+			math.random(
+				spawnObject.Position.X - (spawnObject.Size.X / 2),
+				spawnObject.Position.X + (spawnObject.Size.X / 2)
+			),
+			spawnObject.Position.Y + 3.5,
+			math.random(
+				spawnObject.Position.Z - (spawnObject.Size.Z / 2),
+				spawnObject.Position.Z + (spawnObject.Size.Z / 2)
+			)
+		)
+	if Hair or HairColor or FacialHair then
+		local requests = require(script.Parent.Requests)
+		requests.updatePlayerHair(player, HairColor, Hair, FacialHair)
+	end
+	end
+
+	--[[
+	Debugs & Role Loading screen Error Fix:
+	Fire 9/4/2024
+]]
+
+	_G.teleport = function(player, position)
+		task.spawn(function() -- Prevent clogging (imo)
+			local scripts = script.Parent.Parent.Scripts
+			local ticketer = require(scripts["AntiTP - DUDE"].ticket)
+			ticketer:createTicket(player) -- Allows player to teleport without getting warned by antiTP
+			task.wait(.5) -- Allow time for ticket to be generated
+				if not player or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+					error("Player or player.Character is invalid")
+				end
+
+				-- Making sure Vector3 is Cframe instead
+				local cframePosition = typeof(position) == "Vector3" and CFrame.new(position) or position
+
+
+				if typeof(cframePosition) ~= "CFrame" then
+					error("Position must be of type CFrame or Vector3")
+				end
+
+
+				player.Character.HumanoidRootPart.CFrame = cframePosition
+		end)
+	end
+
+	local success, err
+
+
+	if not _G.stats.places[game.PlaceId].conquering and LastSafePosition then
+
+		success, err = pcall(function()
+
+			if typeof(LastSafePosition) ~= "Vector3" and typeof(LastSafePosition) ~= "CFrame" then
+				error("LastSafePosition must be of type Vector3 or CFrame")
+			end
+			_G.teleport(player, LastSafePosition)
+		end)
+
+		if not success then
+			print("Error calling _G.teleport with LastSafePosition:", err)
+		end
+	else
+		success, err = pcall(function()
+
+			local spawnPosition = player.Status.SpawnPosition.Value
+			if typeof(spawnPosition) ~= "Vector3" and typeof(spawnPosition) ~= "CFrame" then
+				error("SpawnPosition.Value must be of type Vector3 or CFrame")
+			end
+			_G.teleport(player, spawnPosition)
+		end)
+
+		if not success then
+			print("Error calling _G.teleport with SpawnPosition:", err)
+		end
+	end
+
+
+
+
+
+	if not GivenStarterItems then
+		-- Give users their default items for that role.
+		for _, itemName in ipairs(_G.stats.roles[roleName].inventory) do
+			if not _G.misc.find(_G.stats.arbs.bannedItems, itemName) then
+				if _G.stats.items[itemName] then
+					if itemName == "Bandage" then
+						_G.item.add(player, itemName, false)
+					else
+						_G.item.add(player, itemName, true)
+					end
+				else
+					warn(
+						string.format(
+							"[ClientLoader] Item %q was listed as a starter item for role %q, but could not be found in stats.",
+							itemName,
+							roleName
+						)
+					)
+				end
+			else
+				warn(
+					string.format(
+						"[ClientLoader] Item %q was not provided as a starter item for role %q because it is banned.",
+						itemName,
+						roleName
+					)
+				)
+			end
+		end
+
+		_G.DataWrapper.Players.Character.SetGivenStarterItems(player, true)
+	end
+
+	--_G.misc.updatePlayerHair(player, hairColor, hair, facialHair)
+
+	task.spawn(function()
+		local wage = 0
+		local islandwage = 0
+
+		if player:IsInGroup(_G.stats.arbs.mainGroupID) then
+			local rankId = player:GetRankInGroup(_G.stats.arbs.mainGroupID)
+			local rankStats = _G.stats.ranks["HBC"][rankId]
+			if rankStats then
+				wage = rankStats.wage
+			end
+		end
+	--[[if player:IsInGroup(_G.stats.arbs.SubmainGroupID) then
+			local rankId2 = player:GetRankInGroup(_G.stats.arbs.SubmainGroupID)
+			local rankStats = _G.stats.ranks["NWC"][rankId2]
+			if rankStats then
+				wage = rankStats.wage
+			end
+		end]]	
+
+		while wait(_G.stats.arbs.wageTime) and player.Parent do
+			for i, v in pairs(_G.storage.Islands:GetChildren()) do
+				if v.Faction.Value ~= 0 and v.Faction.Value == player.Status.Faction.Value then
+					if player.Status.Role.Value == "HBC" --[[or player.Status.Role.Value == "NWC"]] then
+						if islandwage < 100 then
+							islandwage = wage + 10
+							wage = wage + 10
+						end
+					else
+						if islandwage < 200 then
+							islandwage = wage + 20
+							wage = wage + 20
+						end
+					end
+				end
+			end
+			if player.Status.Playing.Value == true then
+				player.Status.Pounds.Value += wage
+			end
+		end
+	end)
+
+--[[
+	task.spawn(function()
+		if not player.Character or not player.Character:WaitForChild("HumanoidRootPart", 3) then
+			return
+		end
+
+		local humanoidRootPart = player.Character.HumanoidRootPart :: BasePart
+
+		while true do
+			task.wait(.1)
+
+
+			for _, zone in ipairs(_G.mouseFilter.Zones:GetChildren()) do
+				local zoneValue = player.Status.Zones[zone.Name]
+				local zoneStats = _G.stats.zones[zone.Name]
+
+				local isIn = true
+
+				if humanoidRootPart.Position.X < zone.Position.X - zone.Size.X / 2 or humanoidRootPart.Position.X > zone.Position.X + zone.Size.X / 2 then
+
+					isIn = false
+				end
+
+				if humanoidRootPart.Position.Y < zone.Position.Y - zone.Size.Y / 2 or humanoidRootPart.Position.Y > zone.Position.Y + zone.Size.Y / 2 then
+					isIn = false
+				end
+
+				if humanoidRootPart.Position.Z < zone.Position.Z - zone.Size.Z / 2 or humanoidRootPart.Position.Z > zone.Position.Z + zone.Size.Z / 2 then
+					isIn = false
+				end
+
+				player.Status.Zones[zone.Name].Value = isIn
+			end
+		end
+
+	end)]]
+
+	local lastPosition =
+		Vector3.new(player.Character.HumanoidRootPart.Position.X, 0, player.Character.HumanoidRootPart.Position.Z)
+
+	task.spawn(function()
+		while task.wait(0.450) do
+			if not player then
+				break
+			end
+
+			if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+				break
+			end
+
+			if
+				player.Character
+				and player.Character:FindFirstChild("Humanoid")
+				and player.Character:FindFirstChild("HumanoidRootPart")
+			then
+				local humanoidState = player.Character.Humanoid:GetState()
+				if humanoidState ~= Enum.HumanoidStateType.Freefall and humanoidState ~= Enum.HumanoidStateType.Jumping and humanoidState ~= Enum.HumanoidStateType.Swimming then
+					player.Status.LastSafePosition.Value = player.Character.HumanoidRootPart.Position
+				end
+			end
+		end
+	end)
+
+	player.Status.Playing.Value = true
+	player.Status.Respawning.Value = false
+end
+
+--client.saveProgress = function(player)
+--	if player.Parent and player:FindFirstChild("Status") and player.Status:FindFirstChild("Playing") and player.Status.Playing.Value then
+--		local backpack = {}
+--		local equipment = {}
+--		local bankItems = {}
+
+--		for i, v in pairs(player.Status.Items:GetChildren()) do
+--			if v.Value then
+--				table.insert(equipment, v.Name)
+--			else
+--				table.insert(backpack, v.Name)
+--			end
+--		end
+
+--		local tradingPost = player.Status.TradingPost.Value
+--		if tradingPost then
+--			for i, v in pairs(tradingPost.Status.Items:GetChildren()) do
+--				table.insert(backpack, v.Name)
+--			end
+
+--			delay(.2, function()
+--				if player.Status.Leaving.Value then
+--					tradingPost:Destroy()
+--				end
+--			end)
+--		end
+
+--		for i, v in pairs(player.Status.BankItems:GetChildren()) do
+--			table.insert(bankItems, v.Name)
+--		end
+
+--		local claimedpromocodes = {}
+
+--		for i, v in pairs(player.Status.Promocodes:GetChildren()) do
+--			table.insert(claimedpromocodes,v.Name)
+--		end
+
+--		local PlayerData = {
+--			backpack = backpack, -- works
+--			equipment = equipment, -- works
+--			bankItems = bankItems , -- works
+--			bankStorageSpace= player.Status.BankStorageSpace.Value,-- works
+--			claimedpromocodes = claimedpromocodes, -- no
+--			Pounds = player.Status.Pounds.Value, -- no
+--			bankpounds = player.Status.BankPounds.Value, -- no
+--			HairColor = player.Status.HairColor.Value, -- unsure
+--			Hair = player.Status.Hair.Value, -- unsure
+--			FacialHair = player.Status.FacialHair.Value, -- unsure
+--			Hunger = player.Status.Hunger.Value, -- not loaded?
+--			Warmth = player.Status.Warmth.Value, -- not loaded?
+--			lastGameVersion = _G.stats.arbs.gameVersion, -- loaded
+--			lastDailyReward = player.Status.LastDailyReward.Value,
+--			--LastSafePosition = player.Status.LastSafePosition.Value,
+--		}
+
+--		if not _G.stats.places[game.PlaceId].conquering then
+--			PlayerData["x"] = player.Status.LastSafePosition.Value.X
+--			PlayerData["y"] = player.Status.LastSafePosition.Value.Y
+--			PlayerData["z"] = player.Status.LastSafePosition.Value.Z
+--			PlayerData["health"] = player.Status.Health.Value
+--		end
+
+--		local success,Error = pcall(function()
+--			Key:SetAsync(player.UserId .. "_" .. player.Status.Role.Value, game:GetService("HttpService"):JSONEncode(PlayerData))
+--		end)
+--	end
+--end
+
+--client.saveProgressLoop = function(player)
+--	while task.wait(_G.stats.arbs.saveProgressLoopTime) and player.Parent do
+--		client.saveProgress(player)
+--	end
+--end
+
+return client
