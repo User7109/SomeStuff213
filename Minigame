@@ -1,0 +1,99 @@
+local minigame = {}
+
+local replicatedStorage : ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TNFResources : Folder = replicatedStorage:WaitForChild("TNF"):WaitForChild("Resources")
+local uiStorage : Folder = TNFResources:WaitForChild("Guis")
+
+local soundModule = require(TNFResources:FindFirstChild("Modules"):FindFirstChild("Sound"))
+
+local UIS = game:GetService("UserInputService")
+
+local players : Players = game:GetService("Players")
+local player : Player = players.LocalPlayer
+
+function minigame.generateUI(name : string)
+	local newUI = uiStorage:FindFirstChild(name):Clone()
+	
+	if newUI then
+		return newUI
+	end
+end
+
+function minigame.getRandom()
+	local rng = Random.new()
+	local float = rng:NextNumber(.4, .6)
+	
+	return float
+end
+
+function minigame:startFishing(callback)
+	
+	local keyTable = {
+		Enum.KeyCode.E,
+		Enum.KeyCode.Q,
+		Enum.KeyCode.F
+	}
+	
+	local success = false
+	local active = true
+
+	local char = player.Character or player.CharacterAdded:Wait()
+
+	local newUi = minigame.generateUI("FishingMinigame")
+	newUi.Parent = player.PlayerGui
+
+	local newImage : ImageButton = uiStorage:FindFirstChild("FishingBubbleIcon"):Clone()
+	local randomKey = keyTable[math.random(1,3)]
+
+	if newImage then
+		newImage:FindFirstChild("KeyLabel").Text = randomKey.Name
+		newImage.Parent = newUi:FindFirstChild("Canvas")
+		newImage.Position = UDim2.fromScale(minigame.getRandom(), minigame.getRandom())
+		newImage.Size = UDim2.fromScale(0,0)
+		
+		local tween = game:GetService("TweenService"):Create(newImage, TweenInfo.new(.5), {
+			Size = UDim2.fromScale(.048, .073)
+		}):Play()
+
+		soundModule.soundFromClient(5852470908, 1, 1)
+		
+		local connection
+
+		connection = UIS.InputBegan:Connect(function(input, gpe)
+			if gpe then return end
+			if not active then return end
+			
+			if input.KeyCode == randomKey then
+				success = true
+				active = false
+				newUi:Destroy()
+				soundModule.soundFromClient(77120543307812, 1, 1)
+			elseif input.KeyCode == Enum.KeyCode.E or input.KeyCode == Enum.KeyCode.Q or input.KeyCode == Enum.KeyCode.F then
+				success = false
+				active = false
+				soundModule.soundFromClient(550209561, 1, 1)
+				newUi:Destroy()
+			end
+		end)
+
+		delay(3, function()
+			if active then
+				success = false
+				active = false
+				if connection then connection:Disconnect() end
+				newUi:Destroy()
+				soundModule.soundFromClient(550209561, 1, 1)
+			end
+		end)
+
+		while active do
+			game:GetService("RunService").Heartbeat:Wait()
+		end
+
+		callback(success)
+		return
+	end
+	
+end
+
+return minigame
