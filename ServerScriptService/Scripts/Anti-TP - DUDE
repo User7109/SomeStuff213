@@ -1,0 +1,16 @@
+--[[
+Hello any future TNF scripters if there are any. This AntiTP runs off of tickets.
+If a player uses an ingame feature to teleport then they will recieve a ticket.
+This ticket gives the player a 1 time immunity for teleporting. After they are
+detected, the system will check if they have a ticket, if so it will remove it
+and let them by.
+]]--
+
+local tracker = require(script.tracker)
+
+game.Players.PlayerAdded:Connect(function(plr)
+	plr.CharacterAdded:Connect(function(char)
+		local t = tracker.new(plr,char)
+		t:track()
+	end)
+end)
