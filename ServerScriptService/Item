@@ -1,0 +1,1231 @@
+local item = {}
+
+item.start = function()
+	task.wait(1)
+	_G.physicsService:RegisterCollisionGroup("characters", {})
+end
+
+item.spawn = function(player, itemName, position1, position2, content)
+	local itemStats = _G.stats.items[itemName]
+	if itemStats then
+		local itemModel
+		if itemStats.type == "clothing" then
+			itemModel = _G.objects.ClothingFrame:Clone()
+			itemModel.Name = itemName
+			itemModel.Shirt.ShirtTemplate = _G.stats.arbs.assetLink
+				.. tostring(itemStats.shirtID or itemStats.shirtIDs[0])
+			itemModel.Pants.PantsTemplate = _G.stats.arbs.assetLink
+				.. tostring(itemStats.pantsID or itemStats.pantsIDs[0])
+			itemModel.Humanoid.PlatformStand = true
+		elseif
+			itemStats.type == "deployable" and not _G.objects.Items:FindFirstChild(itemName)
+			or itemStats.type == "faction_deployable" and not _G.objects.Items:FindFirstChild(itemName)
+		then
+			itemModel = _G.objects.DeployableItemModel:Clone()
+			itemModel.Name = itemName
+		else
+			itemModel = _G.objects.Items[itemName]:Clone()
+		end
+		if itemModel.PrimaryPart ~= nil then
+			itemModel:SetPrimaryPartCFrame(CFrame.new(position1))
+		end
+		_G.misc.weldModel(itemModel)
+		for i, v in pairs(itemModel:GetChildren()) do
+			if v:IsA("BasePart") and v ~= itemModel.PrimaryPart then
+				local oldTransparency = v.Transparency
+				v.Transparency = 1
+				v.Anchored = false
+				delay(0.7, function()
+					if itemStats.type == "clothing" then
+						v.Transparency = 0
+					else
+						v.Transparency = oldTransparency
+					end
+				end)
+			end
+		end
+		if position2 and _G.objects.ItemBodyPosition ~= itemModel.PrimaryPart then
+			local bodyPositionObject = _G.objects.ItemBodyPosition:Clone()
+			bodyPositionObject.Parent = itemModel.PrimaryPart
+			bodyPositionObject.Position = position2
+			_G.debris:AddItem(bodyPositionObject, 0.2)
+		end
+		itemModel.Parent = _G.mouseFilter
+		coroutine.wrap(_G.client.sendToAllClients)("animateDropItem", itemModel)
+
+		if
+			itemModel.Name == "Tree log"
+			and player
+			and player:FindFirstChild("Status")
+			and player.Status.Quests.QuestTaken.Value == true
+		then
+			coroutine.wrap(function()
+				task.wait(1)
+				_G.misc.GetCollectedTreeLogs(player, "quest")
+			end)()
+		end
+
+		local statusFolder = itemModel:FindFirstChild("Status") or Instance.new("Folder", itemModel)
+		statusFolder.Name = "Status"
+		local draggerValue = Instance.new("ObjectValue")
+		draggerValue.Name = "Dragger"
+		draggerValue.Value = nil
+		draggerValue.Parent = statusFolder
+
+		local justSpawnedValue = Instance.new("BoolValue")
+		justSpawnedValue.Name = "JustSpawned"
+		justSpawnedValue.Value = true
+		justSpawnedValue.Parent = statusFolder
+
+		local contentFolder = Instance.new("Folder")
+		contentFolder.Name = "Content"
+		contentFolder.Parent = statusFolder
+		if itemStats.content then
+			for i, v in pairs(itemStats.content) do
+				local value
+				if type(v) == "boolean" then
+					value = Instance.new("BoolValue")
+					value.Value = false
+					value.Parent = contentFolder
+				elseif type(v) == "number" then
+					value = Instance.new("IntValue")
+					value.Value = 0
+					value.Parent = contentFolder
+				else
+					value = Instance.new("StringValue")
+					value.Value = ""
+					value.Parent = contentFolder
+				end
+				value.Name = i
+				if content and content[i] ~= nil then
+					value.Value = content[i]
+				else
+					value.Value = v
+				end
+			end
+		end
+
+		delay(1, function()
+			justSpawnedValue.Value = false
+			itemModel.Parent = _G.items
+		end)
+
+		delay(_G.stats.arbs.itemDespawnTime, function()
+			if itemModel.Parent then
+				itemModel.Parent = _G.storage
+				wait(2)
+				if itemModel.Parent then
+					itemModel:Destroy()
+				end
+			end
+		end)
+
+		return itemModel
+	end
+end
+
+item.add = function(player, itemNameOrModel,equipOnAdd)
+	if typeof(itemNameOrModel) == "string" and _G.stats.items[itemNameOrModel] then
+		local itemValue = Instance.new("BoolValue")
+		itemValue.Name = itemNameOrModel
+		itemValue.Value = equipOnAdd == true and _G.stats.items[itemNameOrModel].canBeEquipped and not item.getFirstEquipped(player, itemNameOrModel)
+		itemValue.Parent = player.Status.Items
+	elseif typeof(itemNameOrModel) == "Instance" then
+		local itemValue = Instance.new("BoolValue")
+		itemValue.Name = itemNameOrModel.Name
+		for i, v in pairs(itemNameOrModel.Status.Content:GetChildren()) do
+			v.Parent = itemValue
+		end
+		itemValue.Parent = player.Status.Items
+	end
+end
+
+item.remove = function(player, itemValue)
+	if itemValue.Parent == player.Status.Items then
+		itemValue:Destroy()
+	end
+end
+
+function item.addBank(player, itemName)
+	local itemValue = Instance.new("BoolValue")
+	itemValue.Name = itemName
+	itemValue.Parent = player.Status.BankItems
+end
+
+function item.takeBank(player, itemName,rateLimitItemTake)
+	if not itemName then
+		return false 
+	end
+	
+	if item.getNearestBank(player) then
+		
+		if rateLimitItemTake == true then 
+			if tick()-player.Status.lastBankItemStoreTime.Value<0.350 then
+				return false 
+			end
+		end
+
+		if rateLimitItemTake == true then 
+			player.Status.lastBankItemStoreTime.Value = tick()
+		end 
+		
+		local itemValue = player.Status.BankItems:FindFirstChild(itemName)
+		if itemValue then
+			itemValue.Parent = player.Status.Items
+		end
+	end
+end
+
+function item.getBankSpaceAvailable(player)
+	local bankSpaceTaken = 0
+	for i, v in pairs(player.Status.BankItems:GetChildren()) do
+		bankSpaceTaken = bankSpaceTaken + _G.stats.items[v.Name].weight
+	end
+	return math.max(0, player.Status.BankStorageSpace.Value - bankSpaceTaken)
+end
+
+function item.getNearestBank(player)
+	for i, v in pairs(_G.operables.Banks:GetChildren()) do
+		if (player.Character.HumanoidRootPart.Position - v.PrimaryPart.Position).Magnitude < 10 then
+			return v
+		end
+	end
+end
+
+function item.storeBank(player,itemName,rateLimitItemStore)
+	
+	if  not itemName then
+		return false
+	end
+	
+	
+	local nearestBank = item.getNearestBank(player)
+	local itemValue = item.getFirstUnequipped(player, itemName)
+	
+	if not nearestBank then
+		return false
+	end
+	
+	if not itemValue then
+		return false
+	end
+	
+	if rateLimitItemStore == true then 
+		if tick()-player.Status.lastBankItemStoreTime.Value<0.350 then
+			return false 
+		end
+	end
+	
+	if rateLimitItemStore == true then 
+	player.Status.lastBankItemStoreTime.Value = tick()
+	end 
+	
+	local itemStats = _G.stats.items[itemName]
+	local playerRole = player.Status.Role.Value
+	local bankSpaceAvailable = item.getBankSpaceAvailable(player)
+	local itemWeight = itemStats.weight
+
+	if (not itemStats.illegal or playerRole == "HBC") --[[or  (not itemStats.illegalNWC or playerRole == "NWC")]] then
+		if bankSpaceAvailable >= itemWeight then
+			itemValue.Parent = player.Status.BankItems
+			return true
+		end
+	end
+
+	return false
+end
+
+function item.storeTradingPost(player, itemName)
+	local tradingPost = player.Status.TradingPost.Value
+	if tradingPost then
+		local itemValue = item.getFirstUnequipped(player, itemName)
+		local statsModule = require(game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources"):FindFirstChild("Modules"):FindFirstChild("Stats"))
+		if itemValue then
+			
+			local currWeight = 0
+
+			for i,v in pairs(tradingPost.Status.Items:GetChildren()) do
+				local itemWeight = statsModule.items[v.Name].weight
+
+				if itemWeight then
+					currWeight += itemWeight
+				end
+			end
+
+			if currWeight + statsModule.items[itemName].weight > 200 then
+				_G.client.sendToClient(
+					tradingPost.Status.Owner.Value,
+					"newHint",
+					"You cannot go above the 200 weight trading post limit."
+				)
+				return false
+			end
+			
+			if not tradingPost.Status.Costs:FindFirstChild(itemName) then
+				local costValue = Instance.new("NumberValue")
+				costValue.Name = itemName
+				costValue.Value = _G.stats.items[itemName].value
+				costValue.Parent = tradingPost.Status.Costs
+			end
+			itemValue.Parent = tradingPost.Status.Items
+			return true
+		end
+	end
+end
+
+function item.setTradingPostCost(player, itemName, itemCost)
+	local tradingPost = player.Status.TradingPost.Value
+	if tradingPost then
+		tradingPost.Status.Costs:WaitForChild(itemName).Value = math.clamp(itemCost, 0, 100)
+	end
+end
+
+function item.storeStorage(player, itemName, operableModel,rateLimitItemStore)
+	if not operableModel then 
+		return false 
+	end
+	
+	if not itemName  then
+		return false 
+	end
+	
+	if rateLimitItemStore == true then 
+		if tick()-player.Status.lastChestItemStoreTime.Value<0.350 then
+			return false 
+		end
+	end
+	
+	if rateLimitItemStore == true then 
+		player.Status.lastChestItemStoreTime.Value = tick()
+	end
+	
+	if not player.Status.Downed.Value and (player.Character.HumanoidRootPart.Position - operableModel.PrimaryPart.Position).Magnitude <= 8 then
+		local itemValue = item.getFirstUnequipped(player, itemName)
+		if itemValue then
+			local storageItemOwnerUserId = Instance.new("IntValue")
+			storageItemOwnerUserId.Name = "ItemOwnerUserId"
+			storageItemOwnerUserId.Value = tonumber(player.UserId)
+			storageItemOwnerUserId.Parent = itemValue
+			
+			itemValue.Parent = operableModel.Status.Items
+		end
+		return true 
+	end
+	return false 
+end
+
+function item.takeStorage(player, itemName, operableModel,rateLimitItemTake)
+	if not operableModel then 
+		return false 
+	end
+	
+	if not itemName then
+		return false 
+	end
+	
+	if not player.Status.Downed.Value and (player.Character.HumanoidRootPart.Position - operableModel.PrimaryPart.Position).Magnitude <= 8 then
+		local itemValue = operableModel.Status.Items:FindFirstChild(itemName)
+		local ChestOwner = operableModel.Status:FindFirstChild("Owner")
+		
+		
+		if rateLimitItemTake == true then 
+			if tick()-player.Status.lastChestItemStoreTime.Value<0.250 then
+				return false 
+			end
+		end
+
+		if rateLimitItemTake == true then 
+			player.Status.lastChestItemStoreTime.Value = tick()
+		end
+		
+		if itemValue then
+			local storageItemStats = _G.stats.items[itemName]
+			
+			local storageItemOwnerUserId = itemValue.ItemOwnerUserId.Value
+			
+			itemValue.ItemOwnerUserId:Destroy()
+			itemValue.Parent = player.Status.Items
+			
+		
+			if storageItemStats.TradeItemLogged == true then
+				if storageItemOwnerUserId~=player.UserId then 
+				_G.client.ChestItemTaken("Player Taking Item: " .. player.Name .. "\nPlayer Taking Item UserId: " .. tostring(player.UserId) .. "\nItem Taken: " .. itemName .."\nChest Owner Name: "..ChestOwner.Value.Name.."\nChest Owner UserId: "..tostring(ChestOwner.Value.UserId).."\n Item Taken from: "..tostring(storageItemOwnerUserId))
+				end
+			end
+			return true 
+		end
+	end
+	return false 
+end
+
+item.drop = function(player, itemValue, position1, position2, ...)
+	if itemValue.Parent == player.Status.Items then
+		local content = { ... }
+		item.remove(player, itemValue)
+		item.spawn(player, itemValue.Name, position1, position2, content)
+	end
+end
+
+item.getFirstEquipped = function(player, itemName)
+	for i, v in pairs(player.Status.Items:GetChildren()) do
+		
+		if (v.Name == itemName or _G.stats.items[v.Name].type == itemName) and v.Value then
+			return v
+		end
+	end
+end
+
+item.getBackpackAmountNameItem = function(player: Player, itemName: string)
+	local amount = 0
+	for i, v in pairs(player.Status.Items:GetChildren()) do
+		if v.name == itemName then
+			amount = amount + 1
+		end
+	end
+	return amount
+end
+
+item.getFirstUnequipped = function(player, itemName)
+	for i, v in pairs(player.Status.Items:GetChildren()) do
+		if (v.Name == itemName or _G.stats.items[v.Name].type == itemName) and not v.Value then
+			return v
+		end
+	end
+end
+
+item.getFirstUnequippeds = function(player, itemName)
+	local itemValues = {}
+	for i, v in pairs(player.Status.Items:GetChildren()) do
+		if (v.Name == itemName or _G.stats.items[v.Name].type == itemName) and not v.Value then
+			table.insert(itemValues, v)
+		end
+	end
+	return itemValues
+end
+
+item.skin = function(player,request, itemModel, skinName)
+	local itemStats = _G.stats.items[itemModel.Name]
+	
+	if not itemStats then
+		return
+	end
+	
+	
+	if itemStats.weaponType == "musket" or itemStats.weaponType == "pistol" then
+		if request then
+			itemModel.Body.Color = _G.stats.items[skinName].skinColor
+			if _G.stats.items[skinName].textureColor == "Ghostly"  then
+				if itemModel.Body:FindFirstChild("Decal") ~= nil then
+					itemModel.Body.Decal.Transparency = 1
+				end
+				itemModel.Body.Transparency = 0.6
+				itemModel.Body.Material = "Neon"
+			else
+				if itemModel.Body:FindFirstChild("Decal") ~= nil then
+					itemModel.Body.Decal.Transparency = 0
+				end
+				itemModel.Body.Transparency = 0
+				itemModel.Body.Material = "Wood"
+			end
+		else
+			itemModel.Body.BrickColor = BrickColor.new("Burnt Sienna")
+			if itemModel.Body:FindFirstChild("Decal") ~= nil then
+				itemModel.Body.Decal.Transparency = 0
+			end
+			itemModel.Body.Transparency = 0
+			itemModel.Body.Material = "Wood"
+		end
+	elseif itemStats.type == "bag" and itemModel.Name ~= "Hide knapsack" then
+		if request then
+			
+			local backpackTable = require(script.Backpack)
+			
+			if _G.stats.items[skinName].textureColor then
+				if backpackTable[_G.stats.items[skinName].textureColor] then
+					
+					local colorTable = backpackTable[_G.stats.items[skinName].textureColor]
+					
+					for i,v in pairs(itemModel:GetChildren()) do
+						if colorTable[v.Name] then
+							v.Color = colorTable[v.Name]
+						end
+					end
+				end
+			end
+				
+		end
+
+
+	elseif itemStats.type == "satchel" and itemModel.Name ~= "Hide knapsack" then
+		if request then
+			if _G.stats.items[skinName].textureColor == "Black" then
+				itemModel.Backpack.TextureID = "rbxassetid://136544206807121"
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Red" then
+				itemModel.Backpack.TextureID = "rbxassetid://76072981287778"
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Blue" then
+				itemModel.Backpack.TextureID = "rbxassetid://111909515625590"
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Gray" then
+				itemModel.Backpack.TextureID = "rbxassetid://114416217365145"
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Green" then
+				itemModel.Backpack.TextureID = "rbxassetid://137075303666165"	
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Yellow" then
+				itemModel.Backpack.TextureID = "rbxassetid://140120238716629"
+				itemModel.Backpack.Transparency = 0
+				itemModel.Backpack.Material = "Fabric"
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Pink" then
+				itemModel.Backpack.TextureID = "rbxassetid://111593715833815"
+				itemModel.Backpack.Material = "Fabric"
+				itemModel.Backpack.Color = _G.stats.items[skinName].skinColor
+				itemModel.Backpack.Transparency = 0
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			elseif _G.stats.items[skinName].textureColor == "Ghostly" then
+				itemModel.Backpack.TextureID = ""
+				itemModel.Backpack.Material = "Neon"
+				itemModel.Backpack.Color = _G.stats.items[skinName].skinColor
+				itemModel.Backpack.Transparency = 0.6
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0.6
+				end
+
+				for i,v in pairs(itemModel:GetChildren()) do
+					if v:IsA("MeshPart") then
+						v.TextureID = ""
+						v.Material = "Neon"
+						v.Color = _G.stats.items[skinName].skinColor
+						v.Transparency = 0.6
+					end
+				end
+			else
+				itemModel.Backpack.TextureID = "rbxassetid://2132185986"
+				itemModel.Backpack.Transparency = 0
+				if itemModel.Backpack:FindFirstChild("Body") ~= nil then
+					itemModel.Backpack.Body.Transparency = 0
+				end
+			end
+		end
+	end
+end
+
+item.craft = function(player, itemName, craftStation)
+	local itemStats = _G.stats.items[itemName]
+	for i, v in pairs(itemStats.requiredCraftItems) do
+		for j = 1, v do
+			local itemValue = item.getFirstUnequipped(player, i) or item.getFirstEquipped(player, i)
+			if not itemValue then
+				return false
+			end
+			itemValue:Destroy()
+		end
+	end
+	for i = 1, itemStats.craftAmount or 1 do
+		item.add(player, itemName)
+	end
+
+	if itemStats.type == "consumable" and itemStats.consumableType == "food" then
+		local CookItemSound = _G.sounds.CookItem:Clone()
+		CookItemSound.Parent = craftStation
+		CookItemSound:Play()
+		task.wait(1)
+		CookItemSound:Destroy()
+	else
+		if player.Character then
+			local Parent = player.Character:FindFirstChild("HumanoidRootPart")
+
+			if Parent then
+				local CraftItemSound = _G.sounds.CraftItem:Clone() :: Sound
+				CraftItemSound.Parent = Parent
+				CraftItemSound:Play()
+				task.delay(CraftItemSound.TimeLength, CraftItemSound.Destroy, CraftItemSound)
+			end
+		end
+	end
+
+	return true
+end
+
+item.take = function(player, itemModel)
+	if
+		itemModel.Parent == _G.items
+		and (player.Character.HumanoidRootPart.Position - itemModel.PrimaryPart.Position).Magnitude < 10
+	then
+		itemModel.Parent = _G.mouseFilter
+
+		player.Character["Left Arm"].Grab.PlaybackSpeed = math.random(50, 70) / 100
+		player.Character["Left Arm"].Grab:Play()
+		coroutine.wrap(_G.client.sendToAllClients)("animateTakeItem", player, itemModel)
+
+		if itemModel.Name == "Pounds" then
+			player.Status.Pounds.Value = player.Status.Pounds.Value + itemModel.Amount.Value
+		else
+			if itemModel.Name == "Tree log" and player.Status.Tutorial.TutorialStage.Value == 4 then
+				player.Status.Tutorial.TreeLogsCollected.Value = player.Status.Tutorial.TreeLogsCollected.Value + 1
+			end
+			item.add(player, itemModel)
+		end
+		task.wait(0.5)
+		itemModel:Destroy()
+	end
+end
+
+item.drag = function(player, request, itemModel, position)
+	if itemModel and itemModel.Parent then
+		local statusFolder = itemModel:FindFirstChild("Status")
+		if statusFolder then
+			if request and (not statusFolder.Dragger.Value or statusFolder.Dragger.Value == player) then
+				itemModel.Parent = _G.mouseFilter
+				statusFolder.Dragger.Value = player
+				itemModel.PrimaryPart:SetNetworkOwner(player)
+				local bodyPositionObject = itemModel.PrimaryPart:FindFirstChild("ItemBodyPosition")
+				if not bodyPositionObject then
+					bodyPositionObject = _G.objects.ItemBodyPosition:Clone()
+					bodyPositionObject.Parent = itemModel.PrimaryPart
+				end
+				bodyPositionObject.Position = position
+				delay(0.5, function()
+					if statusFolder.Dragger.Value and not statusFolder.Dragger.Value.Parent then
+						item.drag(nil, false, itemModel)
+					end
+				end)
+			elseif not request then
+				local bodyPositionObject = itemModel.PrimaryPart:FindFirstChild("ItemBodyPosition")
+				if bodyPositionObject then
+					bodyPositionObject:Destroy()
+				end
+				itemModel.Parent = _G.items
+				statusFolder.Dragger.Value = nil
+			end
+		end
+	end
+end
+
+local function handleAnimalSound(sound, pauseDurationRange, playbackSpeedRange)
+	sound.Ended:Once(function()
+		task.wait(math.random(pauseDurationRange[1], pauseDurationRange[2]))
+		handleAnimalSound(sound, pauseDurationRange, playbackSpeedRange)
+	end)
+
+	sound.PlaybackSpeed = (math.random(playbackSpeedRange[1], playbackSpeedRange[2]) / 100)
+	sound:Play()
+end
+
+item.equip = function(player, itemValue,rateLimitEquip)
+	if itemValue.Parent == player.Status.Items then
+		local itemName = itemValue.Name
+		local itemStats = _G.stats.items[itemName]
+		local itemModel
+		if itemStats then
+			
+			if itemStats.type == "clothing" then
+				local shirtObject = player.Character:FindFirstChild("Shirt") or Instance.new("Shirt", player.Character)
+				local pantsObject = player.Character:FindFirstChild("Pants") or Instance.new("Pants", player.Character)
+				shirtObject.Name = "Shirt"
+				pantsObject.Name = "Pants"
+				if itemStats.shirtID == "faction" and itemStats.pantsID == "faction" then
+					item.factionUniform(player, itemName, shirtObject, pantsObject)
+					player.Status.Faction.Changed:Connect(function()
+						item.factionUniform(player, itemName, shirtObject, pantsObject)
+					end)
+				else
+					local rankID = player:GetRankInGroup(_G.stats.arbs.mainGroupID)
+					--local rankID2 = player:GetRankInGroup(_G.stats.arbs.SubmainGroupID)
+					if player.Status.Role.Value == "HBC" then
+						shirtObject.ShirtTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.shirtID or itemStats.shirtIDs[rankID] or itemStats.shirtIDs[0])
+						pantsObject.PantsTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.pantsID or itemStats.pantsIDs[rankID] or itemStats.pantsIDs[0])
+				--[[	elseif player.Status.Role.Value == "NWC" then
+						shirtObject.ShirtTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.shirtID or itemStats.shirtIDs[rankID2] or itemStats.shirtIDs[0])
+						pantsObject.PantsTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.pantsID or itemStats.pantsIDs[rankID2] or itemStats.pantsIDs[0])]]
+					else
+						shirtObject.ShirtTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.shirtID or itemStats.shirtIDs[rankID] or itemStats.shirtIDs[0])
+						pantsObject.PantsTemplate = _G.stats.arbs.assetLink
+							.. tostring(itemStats.pantsID or itemStats.pantsIDs[rankID] or itemStats.pantsIDs[0])
+
+					end
+				end
+				
+				
+			elseif itemStats.type == "skinPack" then
+				for i, v in pairs(player.Character.Attachments:GetChildren()) do
+					local itemStats = _G.stats.items[v.Name]
+					
+					
+					item.skin(player,true, v, itemValue.Name)
+				end
+								
+			elseif itemStats.origin then
+				if itemStats.type == "topHead" then
+					if player.Character.Attachments:FindFirstChild("Hair") then
+						player.Character.Attachments.Hair.Hair.Transparency = 1
+					else
+						for i, v in pairs(player.Character:GetChildren()) do
+							if v:IsA("Accessory") then
+								v.Handle.Transparency = 1
+							end
+						end
+					end
+				elseif itemStats.type == "bandana" then
+					if player.Character.Attachments:FindFirstChild("FacialHair") then
+						player.Character.Attachments.FacialHair.Hair.Transparency = 1
+					end
+				end
+				
+				if player.Status.Role.Value == "NWC" and itemStats.type == "bag" then 
+					itemModel = _G.objects.NWCbags[itemName]:Clone()
+				else
+					itemModel = _G.objects.Items[itemName]:Clone()
+				end
+
+				_G.misc.weldModel(itemModel, player.Character)
+				--for i, v in pairs(itemModel:GetChildren()) do
+				--	v.CanCollide = false
+				--end
+				item.setCollision(player, itemModel, false)
+				local weldObjectValue = Instance.new("ObjectValue", itemModel)
+				weldObjectValue.Name = "MainWeld"
+				local weldObject
+				if itemModel.PrimaryPart:FindFirstChild("MainWeld") == nil then
+					weldObject = Instance.new("Weld", itemModel.PrimaryPart)
+				else
+					weldObject = itemModel.PrimaryPart:FindFirstChild("MainWeld")
+				end
+				weldObjectValue.Value = weldObject
+				weldObject.Name = "MainWeld"
+				weldObject.Part0 = itemModel.PrimaryPart
+				weldObject.Part1 = player.Character[itemStats.origin]
+				itemModel.PrimaryPart.CFrame = player.Character[itemStats.origin].CFrame
+				weldObject.C0 = itemModel.PrimaryPart.CFrame:inverse() * player.Character[itemStats.origin].CFrame
+				
+				if itemStats.origin then
+					local bodyPartName = Instance.new("StringValue")
+					bodyPartName.Name = "BodyPart"
+					bodyPartName.Value = itemStats.origin
+					bodyPartName.Parent = itemModel
+				end
+
+				itemModel.Parent = player.Character.Attachments
+				
+				if itemName == "Faction scarf" or itemName == "Faction beret" or itemName == "Faction tricorne" or itemName == "Skull hat" then
+					item.factionItem(player, itemModel)
+				  player.Status.Faction.Changed:Connect(function()
+					item.factionItem(player, itemModel)
+					end)
+				end
+				
+				if itemStats.weaponType == "musket" or itemStats.weaponType == "pistol" or itemStats.weaponType == "bow" or itemStats.type == "melee" or itemStats.type == "bag" then
+							
+					local skinValue = item.getFirstEquipped(player, "skinPack")
+					if skinValue then
+						item.skin(player,true, itemModel, skinValue.Name)
+					end
+				elseif itemStats.type == "banner" then
+					if itemName == "Faction pike" then
+						item.factionPike(player,itemModel)
+
+						player.Status.Faction.Changed:Connect(function()
+							item.factionPike(player,itemModel)
+						end)
+					else
+						item.factionBanner(player, itemModel)
+						player.Status.Faction.Changed:Connect(function()
+							item.factionBanner(player, itemModel)
+						end)
+					end
+				elseif itemStats.type == "Pet" then
+					local Sounds = itemStats.sounds
+
+					if Sounds then
+						if itemModel:FindFirstChild("Pet") then
+							local Sound = Instance.new("Sound")
+
+							Sound.SoundId = Sounds.soundId
+							Sound.Volume = .2
+							Sound.RollOffMode = Enum.RollOffMode.Linear
+							Sound.RollOffMaxDistance = 50
+							Sound.RollOffMinDistance = 10
+							Sound.PlayOnRemove = false
+
+							Sound.Parent = itemModel.Pet
+
+							handleAnimalSound(Sound, Sounds.pauseDurationRange, Sounds.playbackSpeedRange)
+						end
+					end
+				end
+			end
+		end
+		itemValue.Value = true
+		return itemModel
+	end
+end
+
+item.factionBanner = function(player, itemModel)
+	local factionFolder = _G.storage.Factions:FindFirstChild(player.Status.Faction.Value)
+	if factionFolder then
+		itemModel.Banner.Color = factionFolder.AcronymColor.Value
+		factionFolder.AcronymColor.Changed:Connect(function()
+			itemModel.Banner.Color = factionFolder.AcronymColor.Value
+		end)
+		itemModel.Banner.Decal.Texture = factionFolder.Emblem.Value
+		factionFolder.Emblem.Changed:Connect(function()
+			itemModel.Banner.Decal.Texture = factionFolder.Emblem.Value
+		end)
+	else
+		itemModel.Banner.Color = Color3.new(255, 255, 255)
+		itemModel.Banner.Decal.Texture = ""
+	end
+end
+
+item.factionPike = function(player, itemModel)
+	local factionFolder = _G.storage.Factions:WaitForChild(player.Status.Faction.Value, 5)
+	if factionFolder then
+		itemModel.Flag.SurfaceAppearance.Color = factionFolder.AcronymColor.Value
+		factionFolder.AcronymColor.Changed:Connect(function()
+			itemModel.Flag.SurfaceAppearance.Color = factionFolder.AcronymColor.Value
+		end)
+		itemModel.Flag.Decal.Texture = factionFolder.Emblem.Value
+		itemModel.InvisibleFlag.Decal.Texture = factionFolder.Emblem.Value
+		factionFolder.Emblem.Changed:Connect(function()
+			itemModel.Flag.Decal.Texture = factionFolder.Emblem.Value
+			itemModel.InvisibleFlag.Decal.Texture = factionFolder.Emblem.Value
+		end)
+	else
+		itemModel.Flag.SurfaceAppearance.Color = Color3.new(255, 255, 255)
+		itemModel.Flag.Decal.Texture = ""
+		itemModel.InvisibleFlag.Decal.Texture = ""
+	end
+end
+
+item.setCollision = function(player, itemModel, anchor)
+	local mod = itemModel:GetChildren()
+	for i = 1, #mod do
+		if mod[i]:IsA("BasePart") then
+			if mod[i].Transparency ~= 1 then
+				mod[i].CanCollide = anchor
+			end
+		elseif mod[i].ClassName == "Model" then
+			item.setCollision(player, mod[i], anchor)
+		end
+	end
+end
+
+item.factionItem = function(player, itemModel)
+	local itemStats = _G.stats.items[itemModel.Name]
+	local factionFolder = _G.storage.Factions:FindFirstChild(player.Status.Faction.Value)
+	if factionFolder then
+		for i, v in pairs(itemModel:GetChildren()) do
+			if v.Name == "Body" then
+				v.Color = factionFolder.AcronymColor.Value
+			end
+		end
+		factionFolder.AcronymColor.Changed:Connect(function()
+			item.factionItem(player, itemModel)
+		end)
+	else
+		itemModel.Body.Color = Color3.new(255, 255, 255)
+	end
+end
+
+item.factionUniform = function(player, itemName, shirtObject, pantsObject)
+	local itemStats = _G.stats.items[itemName]
+	local factionFolder = _G.storage.Factions:FindFirstChild(player.Status.Faction.Value)
+	if factionFolder then
+		local factionShirt = factionFolder["ShirtID"]
+		local factionPants = factionFolder["PantsID"]
+		if factionShirt.Value then
+			shirtObject.ShirtTemplate = _G.stats.arbs.assetLink .. tostring(factionShirt.Value) -- Aelius
+		end
+		if factionPants.Value then
+			pantsObject.PantsTemplate = _G.stats.arbs.assetLink .. tostring(factionPants.Value)
+		end
+		factionShirt.Changed:Connect(function()
+			item.factionUniform(player, itemName, shirtObject, pantsObject)
+		end)
+		factionPants.Changed:Connect(function()
+			item.factionUniform(player, itemName, shirtObject, pantsObject)
+		end)
+	end
+end
+
+item.unequip = function(player, itemValue)
+	if itemValue then
+		local itemName = itemValue.Name
+		local itemStats = _G.stats.items[itemName]
+		if itemStats then
+			if itemStats.type == "clothing" then
+				local shirtObject = player.Character:FindFirstChild("Shirt")
+				local pantsObject = player.Character:FindFirstChild("Pants")
+				if shirtObject then
+					shirtObject.ShirtTemplate = _G.stats.arbs.assetLink .. _G.stats.arbs.defaultclothing.ShirtsID
+				end
+				if pantsObject then
+					pantsObject.PantsTemplate = _G.stats.arbs.assetLink .. _G.stats.arbs.defaultclothing.PantsID
+				end
+			elseif itemStats.type == "skinPack" then
+				for i, v in pairs(player.Character.Attachments:GetChildren()) do
+					item.skin(player,false, v)
+				end
+			elseif itemStats.origin then
+				local attachementObject = player.Character.Attachments:FindFirstChild(itemName)
+				if attachementObject then
+					attachementObject:Destroy()
+				end
+				if itemStats.type == "topHead" then
+					if player.Character.Attachments:FindFirstChild("Hair") then
+						player.Character.Attachments.Hair.Hair.Transparency = 0
+					else
+						for i, v in pairs(player.Character:GetChildren()) do
+							if v:IsA("Accessory") then
+								v.Handle.Transparency = 0
+							end
+						end
+					end
+				elseif itemStats.type == "bandana" then
+					if player.Character.Attachments:FindFirstChild("FacialHair") then
+						player.Character.Attachments.FacialHair.Hair.Transparency = 0
+					end
+				end
+			end
+		end
+		if itemValue.Parent == player.Status.Items then
+			itemValue.Value = false
+		end
+	end
+end
+
+item.draw = function(player, itemModel)
+	local itemStats = _G.stats.items[itemModel.Name]
+	local weldObject = itemModel.MainWeld.Value --Instance.new("Motor6D", itemModel.Handle)
+	--itemModel.MainWeld.Value:Destroy()
+	task.wait()
+	--itemModel.MainWeld.Value = weldObject
+	--weldObject.Name = "MainWeld"
+	weldObject.Part0 = itemModel:WaitForChild("Handle")
+	weldObject.Part1 = player.Character[itemStats.drawnOrigin or "Right Arm"]
+
+	--weldObject.C1 = player.Character[itemStats.drawnOrigin or "Right Arm"].CFrame
+	weldObject.C0 = itemModel.Handle.CFrame:inverse() * player.Character[itemStats.drawnOrigin or "Right Arm"].CFrame
+	
+	--itemModel.Handle.CFrame = player.Character[itemStats.drawnOrigin or "Right Arm"].CFrame
+
+	--weldObject.Part1 = player.Character[itemStats.drawnOrigin or "Right Arm"]
+end
+
+item.holster = function(player, itemModel)
+	local itemStats = _G.stats.items[itemModel.Name]
+	local weldObject = itemModel.MainWeld.Value --Instance.new("Motor6D", itemModel.PrimaryPart)
+	--itemModel.MainWeld.Value:Destroy()
+	--wait()
+	--itemModel.MainWeld.Value = weldObject
+	--weldObject.Name = "MainWeld"
+	weldObject.Part0 = itemModel.PrimaryPart
+	weldObject.Part1 = player.Character[itemStats.origin]
+
+	--weldObject.C1 = player.Character[itemStats.origin].CFrame
+	weldObject.C0 = itemModel.PrimaryPart.CFrame:inverse() * player.Character[itemStats.origin].CFrame
+	--itemModel.PrimaryPart.CFrame = player.Character[itemStats.origin].CFrame
+
+	--weldObject.Part1 = player.Character[itemStats.origin]
+end
+
+item.consume = function(player, itemName)
+	local itemStats = _G.stats.items[itemName]
+	if itemStats.consumableType == "food" then
+		local consumableModel = _G.objects.Items[itemName]:Clone()
+		consumableModel.PrimaryPart.CanCollide = false
+		local weldObject = consumableModel:WaitForChild("MainWeld").Value
+		weldObject.Part0 = consumableModel.PrimaryPart
+		consumableModel.PrimaryPart.CFrame = player.Character["Left Arm"].CFrame * CFrame.new(0, -1.2, 0)
+		weldObject.Part1 = player.Character["Left Arm"]
+		weldObject.C0 = consumableModel.PrimaryPart.CFrame:inverse() * player.Character["Left Arm"].CFrame
+		consumableModel.Parent = _G.mouseFilter
+		task.wait(1)
+		consumableModel:Destroy()
+	end
+end
+
+item.updateMusketPose = function(player, pose, itemModel)
+	local weldObject = itemModel.MainWeld.Value
+	if pose == "aim" then
+		weldObject.Parent = player.Character["Right Arm"]
+		weldObject.Part1 = player.Character["Right Arm"]
+		weldObject.C0 = player.Character["Right Arm"].CFrame:inverse()
+			* player.Character["Right Arm"].CFrame
+			* CFrame.new(0.3, -1.5, -0.4)
+			* CFrame.Angles(math.rad(90), 0, math.rad(-90))
+	elseif pose == "atEase" then
+		weldObject.Parent = player.Character["Right Arm"]
+		weldObject.Part1 = player.Character["Right Arm"]
+		weldObject.C0 = player.Character["Right Arm"].CFrame:inverse()
+			* player.Character["Right Arm"].CFrame
+			* CFrame.new(-0.4, -1.7, 0)
+			* CFrame.Angles(math.rad(90), 0, math.rad(90))
+	elseif pose == "reload" then
+		weldObject.Parent = player.Character["Left Arm"]
+		weldObject.Part1 = player.Character["Left Arm"]
+		weldObject.C0 = player.Character["Left Arm"].CFrame:inverse()
+			* player.Character["Left Arm"].CFrame
+			* CFrame.Angles(0, math.rad(90), 0)
+			* CFrame.new(0, 0, -1.4)
+	else
+		weldObject.Parent = player.Character["Right Arm"]
+		weldObject.Part1 = player.Character["Right Arm"]
+		weldObject.C0 = player.Character["Right Arm"].CFrame:inverse() * player.Character["Right Arm"].CFrame
+	end
+end
+
+item.updatePistolPose = function(player, pose, itemModel)
+	local weldObject = itemModel.MainWeld.Value
+	if pose == "reload" then
+		weldObject.Parent = player.Character["Left Arm"]
+		weldObject.Part1 = player.Character["Left Arm"]
+		weldObject.C0 = player.Character["Left Arm"].CFrame:inverse()
+			* player.Character["Left Arm"].CFrame
+			* CFrame.Angles(math.rad(-90), 0, 0)
+			* CFrame.new(0, 1.6, -1.4)
+	else
+		weldObject.Parent = player.Character["Right Arm"]
+		weldObject.Part1 = player.Character["Right Arm"]
+		weldObject.C0 = player.Character["Right Arm"].CFrame:inverse() * player.Character["Right Arm"].CFrame
+	end
+end
+
+item.updateCrossbowPose = function(player, pose, itemModel)
+	local weldObject = itemModel.MainWeld.Value
+	if pose == "reload" then
+		weldObject.Parent = player.Character["Left Arm"]
+		weldObject.Part1 = player.Character["Left Arm"]
+		weldObject.C0 = player.Character["Left Arm"].CFrame:inverse()
+			* player.Character["Left Arm"].CFrame
+			* CFrame.Angles(math.rad(-90), 0, 0)
+			* CFrame.new(0, 1.6, -1.4)
+	else
+		weldObject.Parent = player.Character["Right Arm"]
+		weldObject.Part1 = player.Character["Right Arm"]
+		weldObject.C0 = player.Character["Right Arm"].CFrame:inverse() * player.Character["Right Arm"].CFrame
+	end
+end
+
+item.fireMusket = function(player, itemModel)
+	--task.spawn(function()
+		itemModel.Barrel.FireP:Emit(2)
+		itemModel.Barrel.Smoke:Emit(1)
+		if itemModel.Barrel:FindFirstChild("FireLight") then
+			local light = itemModel.Barrel:FindFirstChild("FireLight")
+			light.Enabled = true
+			task.wait(.1)
+			light.Enabled = false
+		end
+	--end)
+end
+
+item.updateTorch = function(player, request, itemModel)
+	itemModel.Effects.Fire.Enabled = request
+	itemModel.Effects.Smoke.Enabled = request
+	if request then
+		itemModel.Effects.ToggleOn:Play()
+		itemModel.Effects.Toggled:Play()
+		itemModel.Effects.PointLight.Range = 20
+	else
+		itemModel.Effects.Toggled:Stop()
+		itemModel.Effects.ToggleOff:Play()
+		itemModel.Effects.PointLight.Range = 0
+	end
+end
+
+item.getModel = function(hitObject)
+	if hitObject:IsDescendantOf(_G.items) or hitObject:IsDescendantOf(_G.mouseFilter) then
+		if
+			(hitObject.Parent == _G.items or hitObject.Parent == _G.mouseFilter) and hitObject:FindFirstChild("Status")
+		then
+			return hitObject
+		else
+			return item.getModel(hitObject.Parent)
+		end
+	end
+end
+
+item.sendPounds = function(player, targetPlayer, amount)
+	if amount > 0 and player.Status.BankPounds.Value >= amount then
+		player.Status.BankPounds.Value = player.Status.BankPounds.Value - amount
+		targetPlayer.Status.BankPounds.Value = targetPlayer.Status.BankPounds.Value + amount
+	end
+end
+
+item.withdrawPounds = function(player, amount)
+	
+	if amount ~= amount then
+		return
+	end
+	
+	local maxPounds = 2000
+	
+	local currentPounds = player.Status.Pounds.Value
+	local distanceTo = math.abs(maxPounds - currentPounds)
+	
+	if amount > distanceTo then
+		amount = distanceTo
+	end
+	
+	if amount and amount > 0 and player.Status.BankPounds.Value >= amount then
+		player.Status.BankPounds.Value = player.Status.BankPounds.Value - amount
+		player.Status.Pounds.Value = player.Status.Pounds.Value + amount
+	end
+end
+
+item.depositPounds = function(player, amount)
+	
+	if amount ~= amount then
+		return
+	end
+	
+	local maxPounds = 10000
+	
+	local currentBankPounds = player.Status.BankPounds.Value
+	local distanceTo = math.abs(maxPounds - currentBankPounds)
+	
+	if amount > distanceTo then
+		amount = distanceTo
+	end
+	
+	if amount and amount > 0 and player.Status.Pounds.Value >= amount then
+		player.Status.Pounds.Value = player.Status.Pounds.Value - amount
+		player.Status.BankPounds.Value = player.Status.BankPounds.Value + amount
+	end
+end
+
+item.updateInstrument = function(player, request, itemModel)
+	if itemModel:IsDescendantOf(player.Character) then
+		if request then
+			itemModel.Songs.Song1:Play()
+		else
+			itemModel.Songs.Song1:Stop()
+		end
+	end
+end
+
+local reloadingTable = {}
+
+item.reloadStart = function(player: Player, itemModel: BoolValue)
+	if item.getFirstEquipped(player, itemModel.Name) ~= itemModel then
+		return print(1)
+	end
+
+	if not _G.stats.items[itemModel.Name] then
+		return print(2)
+	end
+
+	if not _G.stats.items[itemModel.Name].weapon then
+		return print(3)
+	end 
+
+	if not _G.stats.items[itemModel.Name].weapon.reloadTime then
+		return print(4)
+	end
+
+	if itemModel:GetAttribute("reloaded") and itemModel:GetAttribute("reloaded") >= (_G.stats.items[itemModel.Name].weapon.ammoAmount or 1) then
+		return print(5)
+	end
+
+	if item.getBackpackAmountNameItem(player, _G.stats.items[itemModel.Name].weapon.ammoType) <= 0 then
+		return print(6)
+	end
+
+	print(">:reload", itemModel.Name)
+
+	reloadingTable[player] = {os.clock(), itemModel}
+end
+
+
+
+item.reloadEnd = function(player: Player, itemModel: BoolValue)
+	if item.getFirstEquipped(player, itemModel.Name) ~= itemModel then
+		return print(1)
+	end
+
+	if not _G.stats.items[itemModel.Name] then
+		return print(2)
+	end
+
+	if not _G.stats.items[itemModel.Name].weapon then
+		return print(3)
+	end
+
+	if not _G.stats.items[itemModel.Name].weapon.reloadTime then
+		return print(4)
+	end
+
+	if not reloadingTable[player] then
+		return print(5)
+	end
+
+	local difference = os.clock() - reloadingTable[player][1]
+
+	if difference <  _G.stats.items[itemModel.Name].weapon.reloadTime * .7 then
+		return print(6)
+	end
+
+	if difference >  _G.stats.items[itemModel.Name].weapon.reloadTime * 2 then
+		reloadingTable[player] = nil
+		return print(7)
+	end
+
+	local ammoAmount = _G.stats.items[itemModel.Name].weapon.ammoAmount or 1
+
+	if item.getBackpackAmountNameItem(player, _G.stats.items[itemModel.Name].weapon.ammoType)< ammoAmount then
+		ammoAmount = item.getBackpackAmountNameItem(player, _G.stats.items[itemModel.Name].weapon.ammoType)
+	end
+
+	if ammoAmount > 0 then
+		for i = 1, ammoAmount do
+			local ammo = player.Status.Items:FindFirstChild(_G.stats.items[itemModel.Name].weapon.ammoType)
+
+			if ammo then
+				ammo:Destroy()
+			else
+				ammoAmount -= 1
+			end
+		end
+
+		print(">:-reloaded", itemModel.Name)
+
+		itemModel:SetAttribute("reloaded", ammoAmount)
+	end
+
+	reloadingTable[player] = nil
+end
+
+return item
