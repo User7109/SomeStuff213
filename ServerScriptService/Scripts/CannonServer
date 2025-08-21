@@ -1,0 +1,9 @@
+local RS = game:GetService("ReplicatedStorage")
+local events = RS:WaitForChild("Cannon")
+local SS = game:GetService("ServerStorage")
+local mod = require(SS:WaitForChild("Cannon_Handler"))
+
+events.created.OnServerEvent:Connect(function(plr, model)
+	local cannon = mod.new(plr, "Normal", model)
+	cannon.handle()
+end)
