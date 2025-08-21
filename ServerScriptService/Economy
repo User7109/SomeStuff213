@@ -1,0 +1,246 @@
+local economy = {}
+
+economy.start = function()
+	coroutine.wrap(economy.setupStocks)()
+end
+
+economy.setupStocks = function()
+	for i, v in pairs(_G.stats.items) do
+		local stockValue = Instance.new("IntValue", _G.storage.Stocks)
+		stockValue.Name = i
+
+		local stockDifferenceValue = Instance.new("IntValue", _G.storage.StocksDifferences)
+		stockDifferenceValue.Name = i
+		stockDifferenceValue.Value = 0
+
+		if not v["defaultStock"] then
+			--// if item with  default stock doesnt exist we print data of item
+		end
+
+		stockValue.Value = v.defaultStock
+	end
+
+	local poundsValue = Instance.new("IntValue", _G.storage)
+	poundsValue.Name = "Pounds"
+
+	local pounds = _G.stocksDataStore:GetAsync("pounds")
+
+	if pounds then
+		poundsValue.Value = pounds
+	else
+		poundsValue.Value = _G.stats.arbs.defaultPoundsAmount
+		_G.stocksDataStore:SetAsync("pounds", _G.stats.arbs.defaultPoundsAmount)
+	end
+end
+
+function economy.isItemForSale(shop, itemName)
+	local shopStats = _G.stats.shops[shop]
+	for i, v in pairs(shopStats.items) do
+		if v[itemName] then
+			return true
+		end
+	end
+	return false
+end
+
+economy.purchaseItem = function(player, shop, itemName, itemAmount, displayModel)
+	--itemAmount = math.min(itemAmount, _G.storage.Stocks[itemName].Value)
+	local cost = _G.stats.items[itemName].value * itemAmount * _G.stats.shops[shop].purchaseCoefficient
+	if
+		player.Status.Pounds.Value >= cost
+		and itemAmount > 0
+		and (displayModel or economy.isItemForSale(shop, itemName))
+	then
+		--_G.storage.StocksDifferences[itemName].Value = _G.storage.StocksDifferences[itemName].Value - itemAmount
+		--_G.storage.Stocks[itemName].Value = math.max(0, _G.storage.Stocks[itemName].Value - itemAmount)
+		player.Status.Pounds.Value = player.Status.Pounds.Value - cost
+
+		for i = 1, itemAmount do
+			_G.item.add(player, itemName)
+		end
+
+		return itemAmount
+	end
+end
+
+economy.purchaseItemTradingPost = function(player, tradingPost, itemName)
+	if not tradingPost.Status.Items:FindFirstChild(itemName) then
+		return
+	end
+	
+	
+	local cost = tradingPost.Status.Costs[itemName].Value
+	local itemValue = tradingPost.Status.Items:FindFirstChild(itemName)
+	local tradeItemStats = _G.stats.items[itemName]
+	
+	if (player.Status.Pounds.Value >= cost or player == tradingPost.Status.Owner.Value) and itemValue then
+		if player ~= tradingPost.Status.Owner.Value then
+			player.Status.Pounds.Value = player.Status.Pounds.Value - cost
+			spawn(function()
+				tradingPost.Status.Owner.Value.Status.Pounds.Value = tradingPost.Status.Owner.Value.Status.Pounds.Value
+					+ cost
+				_G.client.sendToClient(
+					tradingPost.Status.Owner.Value,
+					"newHint",
+					player.Name .. " purchase one " .. itemName .. " from your trading post"
+				)
+				if tradeItemStats.TradeItemLogged == true then 
+					_G.client.TradeItemPurchased("Player Purchasing: " .. player.Name .. "\nPlayer UserId: " .. tostring(player.UserId) .. "\nItem Purchased: " .. itemName .. "\nItem Price: " .. tostring(cost) .. "\nTradingPost Owner Name: " .. tradingPost.Status.Owner.Value.Name.."\nTradingPost Owner UserId: "..tostring(tradingPost.Status.Owner.Value.UserId))
+				end
+			end)
+		end
+		
+		local ownerPlayer = tradingPost.Status.Owner.Value
+		ownerPlayer.Status.TradingPost.Value = tradingPost
+		
+		itemValue.Parent = player.Status.Items
+		return true
+	end
+end
+
+economy.setItemTradingPostCost = function(player, itemName, itemCost)
+	local tradingPost = player.Status.TradingPost.Value
+	if tradingPost then
+		local ItemPriceCost = tonumber(itemCost)
+		
+		local statsModule = require(game:GetService("ReplicatedStorage"):FindFirstChild("TNF"):FindFirstChild("Resources"):FindFirstChild("Modules"):FindFirstChild("Stats"))
+		local itemStats = statsModule.items[itemName]
+
+		if ItemPriceCost <= 0 then
+			_G.client.sendToClient(
+				tradingPost.Status.Owner.Value,
+				"newHint",
+				"You can not set an item to be sold for 0 or less pounds!"
+			)
+			return
+		end
+		
+		if ItemPriceCost > 650000 then
+			ItemPriceCost = 650000
+		end
+		
+		if itemStats and ItemPriceCost > (itemStats.value * 3) then
+			_G.client.sendToClient(
+				tradingPost.Status.Owner.Value,
+				"newHint",
+				"You cannot sell an item for over 3 times it's value."
+			)
+			return
+		end
+
+		tradingPost.Status.Costs[itemName].Value = ItemPriceCost -- itemCost
+	end
+end
+
+economy.sellItem = function(player, shop, itemName, itemAmount)
+	local itemValues = _G.item.getFirstUnequippeds(player, itemName)
+	--local shopPosition = _G.operables.Main[shop].PrimaryPart.Position
+	itemAmount = math.min(#itemValues, itemAmount)
+	if itemAmount > 0 and itemName ~= "Chest items" then
+		--_G.storage.StocksDifferences[itemName].Value = _G.storage.StocksDifferences[itemName].Value + itemAmount
+		--_G.storage.Stocks[itemName].Value = math.max(0, _G.storage.Stocks[itemName].Value - itemAmount)
+		
+		local maxPounds = 2000
+		local distanceTo = math.abs(maxPounds - player.Status.Pounds.Value)
+		
+		local change = _G.stats.items[itemName].value * itemAmount * _G.stats.shops[shop].sellCoefficient
+		
+		if change > distanceTo then
+			return
+		end
+		player.Status.Pounds.Value = math.max(
+			0,
+			math.floor(
+				player.Status.Pounds.Value
+					+ change
+			)
+		)
+
+		for i = 1, itemAmount do
+			itemValues[i]:Destroy()
+		end
+		
+		return itemAmount
+	elseif itemAmount > 0 and itemName == "Chest items" then
+		
+		local chestRewardsModule = require(script.ChestRewards)
+		
+		for i = 1, itemAmount do
+			local newItem = Instance.new("BoolValue")
+			newItem.Name = chestRewardsModule.returnRandomReward()
+			newItem.Parent = player.Status.Items
+			
+			_G.client.sendToClient(
+				player,
+				"newHint",
+				"Item Received: " .. newItem.Name
+			)
+			
+			itemValues[i]:Destroy()
+			
+			task.wait(.1)
+		end
+		
+		_G.client.chestItemSold(16711680, player.Name .. " sold " .. itemAmount .. " chest items.")
+		
+		return itemAmount
+	end
+end
+
+_G.marketplaceService.ProcessReceipt = function(receiptInfo)
+	local player = _G.players:GetPlayerByUserId(receiptInfo.PlayerId)
+	local cart = _G.stats.store[receiptInfo.ProductId]
+
+	if cart.type == "createFaction" then
+		local playerPrimaryGroup = _G.misc.getPlayerPrimaryGroup(player)
+		if playerPrimaryGroup and playerPrimaryGroup.Rank == 255 then
+			local factionDataStore = _G.dataStoreService:GetDataStore("TNF_Factions1", playerPrimaryGroup.Id)
+			if factionDataStore:GetAsync("timeCreated") then
+				return Enum.ProductPurchaseDecision.NotProcessedYet
+			else
+				factionDataStore:SetAsync("timeCreated", os.time())
+				_G.misc.checkPlayerFaction(player)
+			end
+		else
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+	elseif cart.type == "createFactionUniform" then
+		local playerPrimaryGroup = _G.misc.getPlayerPrimaryGroup(player)
+		if playerPrimaryGroup and playerPrimaryGroup.Rank == 255 then
+			local factionDataStore = _G.dataStoreService:GetDataStore("TNF_Factions1", playerPrimaryGroup.Id)
+			if factionDataStore:GetAsync("hasUniform") then
+				return Enum.ProductPurchaseDecision.NotProcessedYet
+			else
+				factionDataStore:SetAsync("hasUniform", true)
+				spawn(function()
+					_G.storage.Factions[player.Status.Faction.Value].HasUniform.Value = true
+					_G.misc.updateFaction(player.Status.Faction.Value)
+				end)
+			end
+		else
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+	end
+
+	if cart.pounds then
+		player.Status.Pounds.Value = player.Status.Pounds.Value + cart.pounds
+	end
+
+	if cart.items then
+		for i, v in pairs(cart.items) do
+			for j = 1, v do
+				_G.item.add(player, i, true)
+			end
+		end
+	end
+
+	if cart.bankStorageSpace then
+		player.Status.BankStorageSpace.Value = player.Status.BankStorageSpace.Value + cart.bankStorageSpace
+	end
+
+	--_G.client.saveProgress(player)
+
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
+return economy
