@@ -1,0 +1,15 @@
+local integrity = {}
+
+function integrity.start()
+	
+end
+
+function integrity.updateHunger(player, hunger)
+	player.Status.Hunger.Value = hunger
+end
+
+function integrity.updateWarmth(player, warmth)
+	player.Status.Warmth.Value = warmth
+end
+
+return integrity
