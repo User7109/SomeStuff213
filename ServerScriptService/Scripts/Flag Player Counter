@@ -1,0 +1,79 @@
+-- Player Count Display Script (Server-side)
+-- Place this script in ServerScriptService
+
+local Players = game:GetService("Players")
+
+-- Configuration
+local REQUIRED_PLAYERS = 20
+
+-- Find all Counter parts and their TextLabels
+local function findAllCounters()
+	local counters = {}
+
+	-- Navigate to the Map folder under Flags
+	local flags = workspace:FindFirstChild("Flags")
+	if not flags then
+		warn("Flags folder not found in workspace")
+		return counters
+	end
+
+	local map = flags:FindFirstChild("Map")
+	if not map then
+		warn("Map folder not found in Flags")
+		return counters
+	end
+
+	-- Find all Counter parts in Map
+	for _, child in pairs(map:GetChildren()) do
+		if child.Name == "Counter" and child:IsA("Part") then
+			local surfaceGui = child:FindFirstChild("SurfaceGui")
+			if surfaceGui then
+				local textLabel = surfaceGui:FindFirstChild("TextLabel")
+				if textLabel then
+					table.insert(counters, textLabel)
+					--print("Found Counter TextLabel: " .. child:GetFullName())
+				end
+			end
+		end
+	end
+
+	--print("Found " .. #counters .. " Counter displays")
+	return counters
+end
+
+-- Update all counter displays
+local function updateAllCounters()
+	local currentPlayers = #Players:GetPlayers()
+	local counters = findAllCounters()
+
+	for _, textLabel in pairs(counters) do
+		textLabel.Text = currentPlayers .. "/" .. REQUIRED_PLAYERS
+
+		-- Optional: Change color based on status
+		if currentPlayers >= REQUIRED_PLAYERS then
+			textLabel.TextColor3 = Color3.fromRGB(255, 255, 255) -- Green when ready
+		else
+			textLabel.TextColor3 = Color3.fromRGB(255, 228, 190) -- White when waiting
+		end
+	end
+
+	--print("Updated " .. #counters .. " counter displays: " .. currentPlayers .. "/" .. REQUIRED_PLAYERS)
+end
+
+-- Connect to player events
+Players.PlayerAdded:Connect(function(player)
+	--print("Player joined: " .. player.Name)
+	updateAllCounters()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	--print("Player left: " .. player.Name)
+	-- Small delay to ensure the player count is updated
+	wait(0.1)
+	updateAllCounters()
+end)
+
+-- Initial update (with a small delay to ensure everything is loaded)
+wait(2)
+updateAllCounters()
+
