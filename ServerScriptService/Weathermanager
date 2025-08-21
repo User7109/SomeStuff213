@@ -1,0 +1,83 @@
+local WeatherManager = {}
+local g
+WeatherManager.__index = WeatherManager
+
+local Weathers = {
+	["Snowstorm"] = {Chance=20, WeatherType="Snowstorm"},
+	["Rain"] = 		{Chance=30, WeatherType="Rain"},
+	["Default"] = 	{Chance=45, WeatherType="Default"},
+
+	--["HeavyRain"] = {Chance=35, WeatherType="HeavyRain"},
+}
+
+local MaxWeatherChance = 0
+local playingweather = false 
+
+--// SETTINGS
+local MinimumWeatherDuration = 75
+local MaxWeatherDuration = 250
+
+local MinimumWeatherCycleDuration = 75 
+local WeatherCycleDuration = 250
+
+
+for _, weatherdata in pairs(Weathers) do 
+	MaxWeatherChance = MaxWeatherChance + weatherdata.Chance
+end
+
+function WeatherManager.ChooseWeather()
+	local randomWeatherChance = math.random(1, MaxWeatherChance)
+	local accumulatedChance = 0
+
+	for _, weatherdata in pairs(Weathers) do
+		accumulatedChance = accumulatedChance + weatherdata.Chance
+		if randomWeatherChance <= accumulatedChance then
+			return weatherdata
+		end
+	end
+	return Weathers.Snowstorm -- default to Snow if nothing is chosen
+end
+
+function WeatherManager.PlayWeather(weathername)
+		if _G.storage:FindFirstChild(weathername) then
+			local weatherstate = _G.storage:FindFirstChild(weathername)
+			weatherstate.Value = true
+		end
+end
+
+function WeatherManager.StopWeather(weathername)
+		if _G.storage:FindFirstChild(weathername) then
+			local weatherstate = _G.storage:FindFirstChild(weathername)
+			weatherstate.Value = false
+	end
+end
+
+function WeatherManager.StartWeather()
+	playingweather = true 
+	local randomweather = WeatherManager.ChooseWeather()
+	WeatherManager.PlayWeather(randomweather.WeatherType)
+	
+	local WeatherDuration = math.random(MinimumWeatherDuration, MaxWeatherDuration)
+	local WeatherCycleDuration = math.random(MinimumWeatherCycleDuration, WeatherCycleDuration)
+	task.wait(WeatherDuration)
+	WeatherManager.StopWeather(randomweather.WeatherType)
+	task.wait(WeatherCycleDuration)
+	playingweather = false
+end
+
+function WeatherManager.Main()
+	while true do
+		if  playingweather == false then
+			WeatherManager.StartWeather()
+		end
+		task.wait(1) 
+	end
+end
+
+function WeatherManager.start()
+	coroutine.wrap(WeatherManager.Main)()
+end
+
+
+
+return WeatherManager
