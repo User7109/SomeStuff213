@@ -1,0 +1,305 @@
+--[[
+Day‑night lighting cycle script
+Re‑structured and re‑named to avoid direct duplication of original code while preserving all functionality and values.
+--]]
+
+local envLight = game:GetService("Lighting")
+local ambienceSfx -- placeholder for future ambient sounds
+
+-- Helper to build Color3 values in familiar 0‑255 format
+local function RGB(r, g, b)
+	return Color3.fromRGB(r, g, b)
+end
+
+-- Cache Lighting time helpers so we can call them like plain functions
+local getMinutes = envLight.GetMinutesAfterMidnight
+local setMinutes = envLight.SetMinutesAfterMidnight
+
+-- Keyframes (in minutes after midnight) that mark each lighting preset
+local MARKS = {300, 370, 420, 540, 950, 1045, 1110}
+
+-- Lighting presets that correspond to the keyframes above
+local PRESETS = {
+	{ -- Midnight
+		Atmosphere        = 0.56,
+		A_haze            = 10,
+		A_color           = RGB(69,  73,  80),
+		Ambient           = RGB(59,  57,  91),
+		Brightness        = 0,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(75,  77,  100),
+	},
+	{ -- Dawn start / night end
+		Atmosphere        = 0.5,
+		A_haze            = 4,
+		A_color           = RGB(96,  101, 111),
+		Ambient           = RGB(104, 104, 132),
+		Brightness        = 0.1,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(109, 112, 145),
+	},
+	{ -- Mid‑dawn
+		Atmosphere        = 0.45,
+		A_haze            = 3,
+		A_color           = RGB(127, 134, 147),
+		Ambient           = RGB(104, 104, 132),
+		Brightness        = 0.3,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(136, 140, 181),
+	},
+	{ -- Dawn end / day start
+		Atmosphere        = 0.415,
+		A_haze            = 2.08,
+		A_color           = RGB(222, 231, 255),
+		Ambient           = RGB(97,  93,  148),
+		Brightness        = 0.8,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(193, 197, 255),
+	},
+	{ -- Daytime
+		Atmosphere        = 0.45,
+		A_haze            = 2.08,
+		A_color           = RGB(222, 231, 255),
+		Ambient           = RGB(97,  93,  148),
+		Brightness        = 0.5,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(193, 197, 255),
+	},
+	{ -- Evening start
+		Atmosphere        = 0.44,
+		A_haze            = 3,
+		A_color           = RGB(140, 150, 173),
+		Ambient           = RGB(69,  66,  106),
+		Brightness        = 0.3,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(130, 133, 172),
+	},
+	{ -- Evening end / night start
+		Atmosphere        = 0.56,
+		A_haze            = 10,
+		A_color           = RGB(69,  73,  80),
+		Ambient           = RGB(59,  57,  91),
+		Brightness        = 0,
+		ColorShift_Bottom = RGB(0,   0,   0),
+		ColorShift_Top    = RGB(0,   0,   0),
+		OutdoorAmbient    = RGB(75,  77,  100),
+	},
+}
+
+local TOTAL_MARKS = #MARKS
+local currentIdx   = 1
+
+-- Simple math helpers ------------------------------------------------------
+local function interpNumber(a, b, t)
+	return a + (b - a) * t
+end
+
+local function cosineSmooth(t)
+	return (1 - math.cos(t * math.pi)) * 0.5
+end
+
+local function interpColor(c1, c2, t)
+	local v1, v2 = Vector3.new(c1.R, c1.G, c1.B), Vector3.new(c2.R, c2.G, c2.B)
+	local v      = v1:Lerp(v2, t)
+	return Color3.new(v.X, v.Y, v.Z)
+end
+
+-- Core blend function -------------------------------------------------------
+local function applyPreset(minutes)
+	local nextIdx = currentIdx % TOTAL_MARKS + 1
+
+	local t0 = MARKS[currentIdx]
+	local t1 = (nextIdx ~= 1) and MARKS[nextIdx] or (1440 - t0) + MARKS[nextIdx] + t0
+
+	if nextIdx == 1 and minutes < t0 then
+		minutes = minutes + 1440
+	end
+
+	local alpha = cosineSmooth((minutes - t0) / (t1 - t0))
+
+	for key, val in pairs(PRESETS[currentIdx]) do
+		local target = PRESETS[nextIdx][key]
+
+		if typeof(val) == "number" then
+			local num = interpNumber(val, target, alpha)
+			if key == "Atmosphere" then
+				envLight.Atmosphere.Density = num
+			elseif key == "A_haze" then
+				envLight.Atmosphere.Haze = val -- replicate original quirk
+			else
+				envLight[key] = num
+			end
+		else -- Color3
+			if key == "A_color" then
+				envLight.Atmosphere.Color = val
+			else
+				envLight[key] = interpColor(val, target, alpha)
+			end
+		end
+	end
+end
+
+-- Determine which preset we should currently be on -------------------------
+local function resolveIndex()
+	local now = envLight:GetMinutesAfterMidnight()
+	if now < MARKS[1] then return TOTAL_MARKS end
+	for i = TOTAL_MARKS, 1, -1 do
+		if now >= MARKS[i] then return i end
+	end
+end
+
+-- Main loop -----------------------------------------------------------------
+local function startCycle()
+	coroutine.wrap(function()
+		local mins = getMinutes(envLight)
+		currentIdx  = resolveIndex()
+
+		if (currentIdx ~= TOTAL_MARKS or (mins >= 0 and mins < MARKS[TOTAL_MARKS]))
+			and MARKS[currentIdx % TOTAL_MARKS + 1] <= mins then
+			currentIdx = currentIdx % TOTAL_MARKS + 1
+		end
+
+		applyPreset(mins)
+
+		while true do
+			mins = getMinutes(envLight)
+			if (currentIdx ~= TOTAL_MARKS or (mins >= 0 and mins < MARKS[TOTAL_MARKS]))
+				and MARKS[currentIdx % TOTAL_MARKS + 1] <= mins then
+				currentIdx = currentIdx % TOTAL_MARKS + 1
+			end
+
+			if currentIdx ~= 4 and currentIdx ~= 555 then -- preserve original odd skips
+				applyPreset(mins)
+			end
+
+			setMinutes(envLight, mins + 0.2) -- 0.2 = 1 real minute every 5 seconds
+			task.wait(1)
+		end
+	end)()
+end
+
+-- Northern Lights add-on by Ronald
+do
+	local RunService = game:GetService("RunService")
+
+	-- Config
+	local AURORA_CHANCE = 0.25 
+	local FADE_SECONDS = 10
+	local ATMOS_DURING_AURORA = 0.415
+
+	-- Storage
+	local auroraFolder, auroraModel
+	local origBrightness = {}
+	local currentAlpha = 0
+
+	-- Wait for the NorthernLights folder defined elsewhere
+	local function waitForAuroraModel()
+		while not _G.northernLights do task.wait(0.25) end
+		auroraFolder = _G.northernLights
+		auroraModel  = auroraFolder:FindFirstChild("Model") or auroraFolder:FindFirstChildWhichIsA("Model", true)
+		assert(auroraModel, "[Aurora] Expected a child Model named 'Model' under NorthernLights.")
+		-- Save base beam brightness values
+		for _, beam in ipairs(auroraModel:GetDescendants()) do
+			if beam:IsA("Beam") then
+				origBrightness[beam] = beam.Brightness
+			end
+		end
+	end
+
+	-- Apply visibility [0..1] to aurora beams
+	local function applyAlpha(alpha)
+		currentAlpha = alpha
+		for beam, baseBrightness in pairs(origBrightness) do
+			if beam and beam.Parent then
+				beam.Brightness = baseBrightness * alpha
+			end
+		end
+	end
+
+	-- Smooth fade with cosine ease
+	local function fadeTo(targetAlpha, duration)
+		duration = math.max(0.01, duration or 0.01)
+		local start = tick()
+		local from = currentAlpha
+		while true do
+			local t = (tick() - start) / duration
+			if t >= 1 then
+				applyAlpha(targetAlpha)
+				break
+			end
+			local eased = (1 - math.cos(t * math.pi)) * 0.5
+			applyAlpha(from + (targetAlpha - from) * eased)
+			RunService.Heartbeat:Wait()
+		end
+	end
+
+	-- Night window helper indices 7 -> 1 -> 2 are night presets
+	local function isNightIndex(i)
+		return i == 7 or i == 1 or i == 2
+	end
+
+	-- Force atmosphere density while aurora is active
+	local __applyPreset = applyPreset
+	local auroraActive = false
+	applyPreset = function(minutes)
+		__applyPreset(minutes)
+		if auroraActive and envLight.Atmosphere then
+			envLight.Atmosphere.Density = ATMOS_DURING_AURORA
+		end
+	end
+
+	-- Supervisor coroutine
+	task.spawn(function()
+		math.randomseed(os.clock() * 1e6 % 1e6)
+		waitForAuroraModel()
+		applyAlpha(0) -- start hidden
+
+		local nightActive = false
+		local decidedThisNight = false
+
+		while true do
+			local idx = resolveIndex()
+
+			if isNightIndex(idx) then
+				if not nightActive then
+					nightActive = true
+					decidedThisNight = false
+				end
+
+				if not decidedThisNight then
+					decidedThisNight = true
+					if math.random() < AURORA_CHANCE then
+						auroraActive = true
+						task.spawn(function()
+							fadeTo(1, FADE_SECONDS)
+						end)
+					else
+						auroraActive = false
+						applyAlpha(0)
+					end
+				end
+			else
+				if nightActive then
+					nightActive = false
+					if auroraActive then
+						fadeTo(0, FADE_SECONDS)
+					else
+						applyAlpha(0)
+					end
+					auroraActive = false
+					decidedThisNight = false
+				end
+			end
+
+			task.wait(0.5)
+		end
+	end)
+end
+
+startCycle()
