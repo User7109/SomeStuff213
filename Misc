@@ -1,0 +1,2718 @@
+
+--------------------------------------------------------------------
+--[[  ORIGINAL  Misc.lua  (pre‑refactor)  ---------------------------
+
+Role:
+    “Utility / kitchen‑sink” module; injected into global space as
+    `g.misc`.  Provides helper functions used by many other systems.
+
+Key contents (not exhaustive):
+    • Networking wrappers
+        misc.request(...)           -- invoke ClientRequestRemote
+        misc.checkRemoteRequests()  -- anti‑exploit job counter
+
+    • Combat helpers
+        misc.damageEntity(...)      -- client‑side hit logic
+        melee swing debounce table  -> `meleeTable`
+
+    • Animation helpers
+        animateTreeFall / Respawn
+        animateAnimalMovement / Death / Skinned / Respawn
+        animateBullet, animateProjectile
+        animateDoubleDoor, animateNormalDoor
+
+    • Chat helpers
+        newChat(), SendServerChatMessage(), sendChat()
+
+    • Inventory helpers
+        dropItem(), GetCollectedTreeLogs(),
+        RemovePlayerItemsByAmount()
+
+    • Table utilities
+        set(), find(), get(), remove()
+
+    • Player bookkeeping
+        addPlayer(), removePlayer()
+
+Global dependencies:
+    – Relies on many other globals inside `g`
+        (g.tween, g.stats, g.item, g.interface, g.otherPlayer, …)
+    – Directly reads/writes `player.Status.*` folders replicated
+      from the server.
+
+Security notes (original):
+    – Validation is entirely client‑side; an exploiter could bypass
+      most checks unless the server re‑verifies.
+    – Uses `pcall` and empty infinite loops for some anti‑cheat logic.
+
+Usage pattern:
+    Required automatically by Setup:
+        g.misc = require(Resources.Modules.Misc)
+        if misc.init then misc.init(g) end
+        misc.start()                -- when Setup reaches “misc” in order list
+--------------------------------------------------------------------]]
+
+
+local script = script
+script.Name = ""
+getfenv().script = nil
+script.Parent = nil
+local misc = {}
+local g, clientRequestRemote, serverRequestRemote, serverUpdateRemote
+local HttpService = game:GetService("HttpService")
+local jobs = 0
+misc.__index = misc
+local Fishinglist = nil
+
+function misc.init(_g)
+	if game:GetService("RunService"):IsServer() then
+		g = _G
+		Fishinglist = {}
+	else
+		g = _g
+		clientRequestRemote = g.remotes.ClientRequestRemote
+		serverUpdateRemote = g.remotes.ServerUpdateRemote
+		serverRequestRemote = g.remotes.ServerRequestRemote
+	end
+	local self = {}
+	setmetatable(self, misc)
+	return self
+end
+
+function misc:start()
+	serverUpdateRemote.OnClientEvent:Connect(function(functionName, ...)
+		misc[functionName](...)
+	end)
+
+	serverRequestRemote.OnClientInvoke = function(functionName, ...)
+		misc[functionName](...)
+	end
+
+	misc.setupSounds()
+end
+
+
+misc.request = function(...)
+	jobs = jobs + 1
+	return clientRequestRemote:InvokeServer(...)
+end
+
+
+--[[
+    Function: misc.checkRemoteRequests()
+
+    Description:
+        Decrements the global 'jobs' counter (likely tracking outbound remote calls).
+        If 'jobs' drops below 0, it assumes exploit abuse:
+            1. Sends a "CheaterDetected" request to the server.
+            2. Locks the client with an infinite loop.
+
+    Potential Exploitability:
+        • This function only runs on the **client** — exploiters can easily bypass it.
+        • 'jobs' is likely global and mutable — attackers could:
+            - Reset it before this check runs
+            - Prevent it from decrementing
+            - Set it to a high value to avoid detection
+        • 'misc.request' can be overridden, preventing the cheat report from sending.
+        • The infinite loop (`while true do end`) is ineffective; exploiters can remove 
+          or detour it.
+
+    Exploit Risks (Item/Gain Focus):
+        • If 'jobs' is meant to limit how often an exploiter can request items or trigger
+          certain game logic (e.g., combat, crafting, or looting), bypassing this check 
+          would allow **mass item spawning**, **duping**, or **rapid farming**.
+        • If the client uses `jobs` to throttle animations or item usage, this could 
+          allow **weapon spam**, **instant healing**, or **skipping cooldowns**.
+
+    Important Notes:
+        • 'jobs' should be local or stored in a secure client-side controller.
+        • Anti-abuse logic must be replicated and validated server-side.
+        • Relying on client enforcement provides no real security — only superficial deterrence.
+]]
+
+-- Useless function made by Bura, do not remove or else bye bye game probably.
+function misc.checkRemoteRequests()
+	jobs = jobs - 1
+	--[[if jobs < 0 then
+		misc.request("CheaterDetected", "Exploiting", "4")
+	end]]--
+end
+
+--[[
+    Function: misc.setCollisionGroup(object, collisionGroup)
+
+    Description:
+        Recursively sets the specified `collisionGroup` on a `BasePart` and all of its descendants.
+        Used to change how objects interact with physics (e.g., no-collide, team-based collision, etc).
+
+    Potential Exploitability:
+        • Function is benign by itself — it does not grant or remove items, affect player stats, 
+          or make remote calls.
+        • However, if exposed and misused in the wrong context (e.g., modifying collision for players, tools, 
+          or hitboxes), it could:
+            - Let a player walk through walls (e.g., if they call this on themselves or items).
+            - Let weapons or items bypass intended collision checks (e.g., throwables or projectiles).
+            - Affect anti-exploit systems relying on physics-based detection.
+
+    Exploit Risks (Item Duping / Item Gaining / Game Hacking):
+        • No direct item or duping risk unless combined with other exploit chains.
+        • Can be used to:
+            - Bypass map barriers (noclip).
+            - Interfere with hit detection or entity blocking mechanics.
+            - Manipulate team-based or mode-based collision logic (e.g., PvP toggling).
+        • If an exploiter gets access to this or calls it on unintended objects (like characters),
+          it becomes a security risk.
+
+    Important Notes:
+        • Ensure this function is only called on **known-safe targets** (e.g., props, ragdolls, 
+          projectiles) and **never on player characters** or tools from user input.
+        • Should not be exposed to remote calls or tied to unvalidated client input.
+]]
+
+
+function misc.setCollisionGroup(object, collisionGroup)
+	if object:IsA("BasePart") then
+		object.CollisionGroup = collisionGroup
+	end
+	for _, _object in pairs(object:GetChildren()) do
+		misc.setCollisionGroup(_object, collisionGroup)
+	end
+end
+
+--[[
+    Function: misc.getPlayerFromPart(part)
+
+    Description:
+        Recursively traverses the parent hierarchy of a given `part` to identify the associated Player.
+        Calls `g.playersService:GetPlayerFromCharacter(...)` at each level until a match is found or the top is reached.
+        Used to trace a physical part (like a limb or tool) back to its owner.
+
+    Potential Exploitability:
+        • Low direct risk — this is a utility function with no game-affecting logic.
+        • However, if used without validation in other systems (e.g., for ownership checks, damage, 
+          item pickup, or crediting kills), it can be exploited indirectly:
+            - An exploiter could spoof a character model, insert fake parts, or cause confusion in ownership logic.
+            - If this is used to give rewards, grant items, or log events, a fake hierarchy could lead to abuse.
+
+    Exploit Risks (Item Duping / Item Gaining / Game Hacking):
+        • No duping or item-giving risk by itself.
+        • Risk emerges **only if this function is used to:
+            - Determine who should get an item.
+            - Attribute a kill or action.
+            - Check permissions or status (e.g., for crafting, pickup, triggering).
+
+    Important Notes:
+        • Safe to use in read-only contexts.
+        • Must not be treated as a secure way to identify ownership unless the `part` is guaranteed 
+          to come from a trusted source (e.g., verified player character models).
+        • Consider adding a max recursion depth or nil fallback to prevent potential runaway loops or infinite errors.
+]]
+
+
+function misc.getPlayerFromPart(part)
+	if part then
+		local player = g.playersService:GetPlayerFromCharacter(part)
+		if player then
+			return player
+		else
+			return misc.getPlayerFromPart(part.Parent)
+		end
+	end
+end
+
+--[[
+    Function: misc.damageEntity(entity, item, checkBlocking, code)
+
+    Description:
+        Handles client-side hit logic when a player damages another entity (NPC or Player).
+        - Validates a hardcoded `code` string (security-through-obscurity).
+        - Optionally checks if the target is blocking (only if `checkBlocking` is true).
+        - Plays the hit sound if the weapon has a blade.
+        - Sends a request to the server to apply actual damage via `misc.request("damage", ...)`.
+        - Triggers UI feedback like hit markers and in-world hints depending on the outcome.
+
+    Parameters:
+        • entity: Target to damage. May be a model or a player instance.
+        • item: The weapon/tool used to perform the hit.
+        • checkBlocking: Boolean flag to check if the target is blocking (client-side).
+        • code: Obfuscated string meant to restrict access to this function.
+
+    Potential Exploitability:
+        • Extremely high — this function exists entirely on the **client** and sends a request to damage other entities.
+        • The “security code” can be **copied, brute-forced, or removed** by exploiters.
+        • An attacker can:
+            - Forge calls to `misc.request("damage", ...)` with spoofed data.
+            - Bypass `checkBlocking` to ensure every attack lands.
+            - Call this function in loops or automate it for rapid hits (triggerbots, autoslash).
+            - Change weapon stats (e.g., `item.content.chargeForce`) to increase damage output.
+
+    Exploit Risks (Item Duping / Item Gaining / Game Hacking):
+        • Major **combat exploit potential**:
+            - Deal **unauthorized or excessive damage** to other players/NPCs.
+            - Bypass safeties like safezones, block states, and faction limits.
+            - Possibly **farm loot or XP** by force-killing NPCs or players with spammed calls.
+        • If not rate-limited or revalidated server-side, could lead to:
+            - **Griefing** or **mass killing**.
+            - **Bypassing faction rules** (e.g., friendly fire).
+            - Abuse of reward systems tied to kills.
+
+    Important Notes:
+        • The function relies on a fragile security string that offers **zero real protection**.
+        • All damage logic **must** be verified and applied server-side, regardless of client input.
+        • If `misc.request("damage", ...)` directly applies damage on the server without additional checks, 
+          then this is a major security vulnerability.
+        • Consider removing this function or restricting its use entirely to secure server-authorized contexts.
+        • Client should only **request an attempt** to damage, never assume success or apply effects directly.
+
+    Recommendations:
+        • Replace `code` gatekeeping with proper role-based access or RemoteFunction filtering.
+        • Ensure the server validates:
+            - The attacker is allowed to hit the target.
+            - Both are within range.
+            - The item is actually equipped.
+            - Cooldowns and safezone/faction rules apply.
+]]
+
+
+function misc.damageEntity(entity, item, checkBlocking, code, headshot)
+
+	if code == "9q)!W.jtW2(02QMqj3o]v[ao]tw)hV2f8IXqMJeLV~1y+-Cvx3cfy55fb~DQ0+QKT1e_3u]mWk66S_UnIsRjRgmm4BF3oFJ[Aqe21G!(JgtY)C" then
+
+		if type(entity) == "table" then
+			entity = entity.model
+		end
+		
+
+		if not checkBlocking or not g.players[entity.Name] or not g.players[entity.Name].blocking then
+			if item and item.model and item.model:FindFirstChild("Blade") then
+				item.model.Blade.Hit:Play()
+			end
+
+			
+			local damageDone = g.misc.request("damage", entity, item.object, item.content and item.content.chargeForce, headshot)
+			if entity ~= false then
+				
+				if entity~=nil then 
+				if item and item.model and item.stats.weaponType then
+					local WeaponType = item.stats.weaponType
+
+					coroutine.wrap(function()
+						if WeaponType == "musket" or WeaponType == "pistol" or WeaponType == "bow" or WeaponType == "crossbow" then
+							g.interface:SetCursorHitMarker(Color3.fromRGB(250, 95, 50))
+						end
+					   end)()
+					end
+				end
+				
+				if entity and entity:IsA("Player") then
+						
+					if type(damageDone) == "number" then
+						g.interface:newHint(
+							"Player safe for " .. (g.stats.arbs.respawnSafeTime - damageDone) .. " second(s)"
+						)
+					elseif type(damageDone) == "string" and damageDone == "faction" then
+						g.interface:newHint("Player in same faction")
+					elseif not damageDone then
+						g.interface:newHint("Player safezoned")
+					end
+				end
+				return damageDone
+			end
+		end
+	end
+end
+
+--[[
+    Function: misc.addOperable(operableModel, parent)
+
+    Description:
+        Adds a new "operable" model to the global `g.operables` table by wrapping it 
+        with the `g.operable.new()` constructor. Then, recursively traverses the model's 
+        hierarchy (or a specific `parent`) to:
+            - Temporarily set each `BasePart`'s Transparency to 1.
+            - Tween it back to original transparency and CFrame with animation.
+        If the part isn't the PrimaryPart, it gets lifted slightly before tweening back.
+
+    Parameters:
+        • operableModel: The main model to register and animate as operable.
+        • parent (optional): Used for recursion to process submodels only.
+
+    Potential Exploitability:
+        • Low direct risk — does not give or remove items, apply damage, or call remotes.
+        • However, if misused or exposed:
+            - Players could forcibly register their own operables to `g.operables`, potentially 
+              interfering with object logic (e.g., fake door interactions, puzzle solving).
+            - Could be used to spam tweens or create visual obfuscation (e.g., fake terrain, 
+              quickly vanishing parts).
+            - Animations that manipulate CFrame may **clip parts through walls** if not anchored 
+              or restricted.
+
+    Exploit Risks (Item Duping / Item Gaining / Game Hacking):
+        • No direct risk of item duplication or gaining, but indirect risks include:
+            - **Faking object interactions** by spoofing or replacing operables.
+            - Creating **visual desyncs or false objects** in multiplayer gameplay to confuse others.
+            - Tweaking or shifting parts (via CFrame manipulation) that could hide doors or create 
+              pathing exploits.
+        • If this function is ever callable by the client (or its effects synced without validation), 
+          it opens up creative abuse routes.
+
+    Important Notes:
+        • `g.operables` should be managed **exclusively server-side** or validated before use.
+        • Ensure that `g.operable.new()` enforces proper object constraints — especially preventing 
+          spoofed/fake operables.
+        • Part CFrame tweening should be used only for cosmetic purposes unless carefully validated.
+
+    Recommendations:
+        • Lock down where and how operables are added.
+        • If operables trigger server-side events (like loot spawning, unlocking), ensure those events 
+          validate the source.
+]]
+
+
+function misc.addOperable(operableModel, parent)
+	if not parent then
+		g.operables[operableModel] = g.operable.new(operableModel)
+	end
+	for i, v in pairs((parent or operableModel):GetChildren()) do
+		if v:IsA("BasePart") then
+			local transparency = v.Transparency
+			local cFrame = v.CFrame
+			v.Transparency = 1
+			if v ~= operableModel.PrimaryPart then
+				v.CFrame = v.CFrame * CFrame.new(Vector3.new(0, 2, 0))
+			end
+			delay((i - 1) / 5, function()
+				g.tween:TweenNumber(v, "Transparency", transparency, 0.5, g.tween.Ease.In.Linear)
+				if v ~= operableModel.PrimaryPart then
+					g.tween:TweenCFrame(v, "CFrame", cFrame, 0.5, g.tween.Ease.In.Linear)
+				end
+			end)
+		elseif v:IsA("Model") then
+			misc.addOperable(operableModel, v)
+		end
+	end
+end
+
+--[[
+    Function: misc.removeOperable(operableModel, parent)
+
+    Description:
+        Deregisters a model from the `g.operables` table and triggers a fade-out visual effect,
+        setting transparency to 1 and moving parts slightly downward via tween. Applies recursively.
+
+    Potential Exploitability:
+        • Minimal direct risk, but like `addOperable`, could be used to visually hide items or props
+          if misused or exposed to the client.
+
+    Exploit Risks:
+        • Visual confusion if players can call this at will (e.g., hiding doors or interactables).
+        • Could be used to create obfuscation exploits in PvP or raids if tied to environment logic.
+
+    Notes:
+        • Safe if strictly cosmetic.
+        • Guard against unauthorized removal of operables if they affect gameplay.
+]]
+
+
+function misc.removeOperable(operableModel, parent)
+	g.operables[operableModel] = nil
+	for i, v in pairs((parent or operableModel):GetChildren()) do
+		if v:IsA("BasePart") then
+			delay((i - 1) / 10, function()
+				g.tween:TweenNumber(v, "Transparency", 1, 0.5, g.tween.Ease.In.Linear)
+				if v ~= operableModel.PrimaryPart then
+					g.tween:TweenCFrame(
+						v,
+						"CFrame",
+						v.CFrame * CFrame.new(Vector3.new(0, -1, 0)),
+						0.5,
+						g.tween.Ease.In.Linear
+					)
+				end
+			end)
+		elseif v:IsA("Model") then
+			misc.removeOperable(operableModel, v)
+		end
+	end
+end
+
+--[[
+    Function: misc.dropItem(itemName)
+
+    Description:
+        Calls `g.inventory:dropItem` with the given item name, triggering the player's 
+        item to be dropped in-world. This is likely bound to the local player.
+
+    Potential Exploitability:
+        • Depends entirely on how `g.inventory:dropItem` is implemented.
+        • If not secured, exploiters could drop infinite items or force-drop protected ones.
+
+    Exploit Risks:
+        • If the drop function has duplication or re-spawn logic bugs, this can enable **item duping**.
+        • Could be used to grief other players (e.g., forcing drops through spoofed input).
+
+    Notes:
+        • Ensure server verifies ownership and prevents unauthorized or invalid item drops.
+        • Should not allow dropping of items not in inventory.
+]]
+
+
+function misc.dropItem(itemName)
+	g.inventory:dropItem(itemName)
+end
+
+--[[
+    Function: misc.loadZone(player, zoneName, cFrame)
+
+    Description:
+        Loads a specific game zone for the given player, teleporting or positioning them using the `cFrame`.
+        Likely used in client-local logic for transitioning areas.
+
+    Potential Exploitability:
+        • Moderate risk depending on what `:loadZone` does.
+        • If tied to unlocking content, accessing safezones, or manipulating location logic,
+          this can be used to bypass restrictions.
+
+    Exploit Risks:
+        • Could be used to **teleport** to otherwise inaccessible zones.
+        • If zone load triggers events (e.g., loot refresh, fast travel, escape), could be **exploited to gain items**.
+
+    Notes:
+        • Ensure zone access is permission-gated and validated server-side.
+        • CFrame teleports should not give players unintended positional advantage or access.
+]]
+
+
+function misc.loadZone(player, zoneName, cFrame)
+	if g.players[player.Name] then
+		g.players[player.Name]:loadZone(g.zones[zoneName], cFrame)
+	end
+end
+
+--[[
+    Function: misc.unloadZone(player, zoneName)
+
+    Description:
+        Unloads the specified zone for the given player by calling `:unloadZone` 
+        on their associated object in `g.players`.
+
+    Potential Exploitability:
+        • Minimal direct exploit risk.
+        • If zone unloading resets state (e.g., loot respawns, enemy spawns), exploiters 
+          could toggle it to abuse resource spawns.
+
+    Exploit Risks:
+        • If zone unload cancels combat, resets cooldowns, or manipulates inventory logic,
+          it could be abused for **duping**, **safe escape**, or **stat resets**.
+        • May indirectly allow zone reentry glitches if paired with loadZone.
+
+    Notes:
+        • Ensure that zone unloads are monitored and gated with proper server-side logic.
+        • Log rapid toggling for potential abuse detection.
+]]
+
+
+function misc.unloadZone(player, zoneName)
+	if g.players[player.Name] then
+		g.players[player.Name]:unloadZone(g.zones[zoneName])
+	end
+end
+
+--[[
+    Function: misc.animateAnimalMovement(operableModel, waypoints)
+
+    Description:
+        Animates an animal NPC moving along a sequence of waypoints using tweens.
+        Skips movement if the animal is dead or lacks required stats/triggers.
+        Computes a look direction and raycasts toward terrain to set the CFrame path.
+
+    Potential Exploitability:
+        • Low direct risk; mostly visual and used for NPC AI.
+        • If this system triggers or syncs lootable animal behavior, attackers could 
+          potentially **desync movement** to avoid combat or **trap** animals.
+
+    Exploit Risks:
+        • If tied to drop logic or enemy proximity, spoofing position could enable **safe farming**.
+        • If misused to animate animals into safezones or out-of-bounds areas, may lead to abuse.
+
+    Notes:
+        • Ensure animals can’t be reanimated or retriggered after death from the client side.
+        • Make sure loot or combat isn't client-trusted based on animal movement.
+]]
+
+
+function misc.animateAnimalMovement(operableModel, waypoints)
+	if not operableModel then
+		return
+	end
+
+	if not g.stats.animals[operableModel.Name] then
+		return
+	end
+
+	if not operableModel:FindFirstChild("Triggers") then
+		warn(operableModel, "is missing a trigger!")
+		return
+	end
+
+	local animalStats = g.stats.animals[operableModel.Name]
+	for i = 2, #waypoints do
+		if operableModel.Status.Health.Value > 0 then
+			local waypoint = waypoints[i]
+			local origin = waypoint + Vector3.new(0, 10, 0)
+			local ray = Ray.new(origin, (waypoint - origin).unit * 20)
+			local _, hitPosition = workspace:FindPartOnRayWithWhitelist(ray, { workspace.Terrain })
+			local lookAt = waypoints[i + 1]
+			local cFrame
+			if lookAt then
+				cFrame = CFrame.new(hitPosition, Vector3.new(lookAt.X, hitPosition.Y, lookAt.Z))
+			else
+				cFrame = CFrame.new(hitPosition)
+			end
+			--	if operableModel.Name == "Hawk" then
+			--		cFrame = CFrame.new(Vector3.new(lookAt.X, hitPosition.Y + 20, lookAt.Z))
+			--	end
+			g.tweenService
+				:Create(
+					operableModel.Triggers.Trigger.Main,
+					TweenInfo.new(animalStats.walkSpeed / 10, Enum.EasingStyle.Linear),
+					{ CFrame = cFrame * animalStats.cFrameOffset }
+				)
+				:Play()
+			task.wait(animalStats.walkSpeed / 10)
+		else
+			break
+		end
+	end
+end
+
+--[[
+    Function: misc.animateAnimalDeath(operableModel, cFrame)
+
+    Description:
+        Animates an animal NPC's death using a tween that moves the model to a specific position,
+        offset by `deadCFrameOffset`.
+
+    Potential Exploitability:
+        • Visual effect only — no game state is changed here.
+        • Low direct risk unless used to sync state that the server also relies on.
+
+    Exploit Risks:
+        • If this animation triggers loot drops or skinning windows, exploiters could spoof death animations 
+          without server-side kill confirmation, leading to **unauthorized item gain**.
+
+    Notes:
+        • Always pair this animation with confirmed server-side health checks and reward triggers.
+        • Do not allow client animations to affect drop logic or combat state.
+]]
+
+
+function misc.animateAnimalDeath(operableModel, cFrame)
+	local animalStats = g.stats.animals[operableModel.Name]
+	g.tweenService
+		:Create(
+			operableModel.Triggers.Trigger.Main,
+			TweenInfo.new(animalStats.walkSpeed / 10, Enum.EasingStyle.Linear),
+			{ CFrame = cFrame * animalStats.cFrameOffset * animalStats.deadCFrameOffset }
+		)
+		:Play()
+end
+
+--[[
+    Function: misc.animateAnimalSkinned(operableModel)
+
+    Description:
+        Animates the animal becoming fully transparent over 3 seconds to simulate it being skinned.
+        Purely visual.
+
+    Potential Exploitability:
+        • Very low risk — purely cosmetic effect.
+        • Can be abused **only if** loot is granted based on this visual trigger without server validation.
+
+    Exploit Risks:
+        • If used as a signal for item reward, exploiters could call it manually to fake skinning 
+          and claim drops — leads to **free pelts or resources**.
+
+    Notes:
+        • Skinning must always be verified and processed by the server before triggering this visual.
+        • Consider coupling transparency changes with backend reward logic, not exposing it directly.
+]]
+
+
+function misc.animateAnimalSkinned(operableModel)
+	g.tweenService:Create(operableModel.Triggers.Trigger.Main, TweenInfo.new(3), { Transparency = 1 }):Play()
+end
+
+function misc.animateAnimalRespawn(operableModel)
+	g.tweenService:Create(operableModel.Triggers.Trigger.Main, TweenInfo.new(1), { Transparency = 0 }):Play()
+end
+
+function misc.animateBloodDrip(player)
+	local ray = Ray.new(
+		player.Character.Torso.Position,
+		((player.Character.Torso.Position - Vector3.new(0, 10, 0)) - player.Character.Torso.Position).Unit * 20
+	)
+	local hitObject, hitPosition =
+		workspace:FindPartOnRayWithIgnoreList(ray, { g.mouseFilter, g.characters, g.items, g.operablesF })
+	local bloodObject = g.objects.BloodFrame:Clone()
+	bloodObject.CFrame = CFrame.new(hitPosition - Vector3.new(0, 0.099, 0))
+		* CFrame.Angles(0, math.rad(math.random(1, 360)), 0)
+	local sizeOffset = math.random(30, 50) / 10
+	bloodObject.Size = Vector3.new(sizeOffset, 0.2, sizeOffset)
+	bloodObject.Parent = g.mouseFilter
+	local originalSize = bloodObject.Size
+	bloodObject.Size = Vector3.new(0.2, 0.2, 0.2)
+	g.tween:TweenVector3(bloodObject, "Size", originalSize, 1, g.tween.Ease.In.Linear)
+	g.tween:TweenNumber(bloodObject.Decal, "Transparency", 0.4, 1, g.tween.Ease.In.Linear)
+	task.wait(g.stats.arbs.bloodDripLifetime)
+	if bloodObject.Parent then
+		g.tween:TweenNumber(bloodObject.Decal, "Transparency", 1, 10, g.tween.Ease.In.Linear)
+		g.debris:AddItem(bloodObject, 11)
+	end
+end
+
+function misc.animateTakeItem(player, itemModel)
+	if player.Character:IsDescendantOf(workspace) or player == g.player then
+		for i, v in pairs(itemModel:GetChildren()) do
+			if v:IsA("BasePart") then
+				v.Anchored = true
+				v.CanCollide = false
+				g.tween:TweenNumber(v, "Transparency", 1, 0.2, g.tween.Ease.In.Linear)
+			end
+		end
+		g.tween:TweenCFrame(
+			itemModel,
+			"SetPrimaryPartCFrame",
+			CFrame.new(player.Character.HumanoidRootPart.Position),
+			0.2,
+			g.tween.Ease.In.Linear
+		)
+	end
+end
+
+function misc.animateAnchorItem(itemModel, operableModel)
+	if operableModel:IsDescendantOf(workspace) then
+		g.tween:TweenCFrame(
+			itemModel,
+			"SetPrimaryPartCFrame",
+			operableModel.Container.CFrame,
+			0.2,
+			g.tween.Ease.In.Linear
+		)
+	end
+end
+
+function misc.animateTreeFall(operableModel)
+	-- Fall animation (tilt 90° forward over 3 s)
+	g.tween:TweenCFrame(
+		operableModel,
+		"SetPrimaryPartCFrame",
+		operableModel:GetPrimaryPartCFrame() * CFrame.Angles(math.rad(90), 0, 0),
+		3,
+		g.tween.Ease.In.Quad
+	)
+
+	task.wait(2)
+
+	-- Parts that always fade the same way
+	for _, partName in ipairs({ "Main", "Leaves", "Stump", "Trunk" }) do
+		local part = operableModel:FindFirstChild(partName)
+		if part and part:IsA("BasePart") then
+			g.tween:TweenNumber(part, "Transparency", 1, 1, g.tween.Ease.In.Linear)
+		end
+	end
+
+	-- Optional Main2 and its decal
+	local main2 = operableModel:FindFirstChild("Main2")
+	if main2 then
+		if main2:IsA("BasePart") then
+			g.tween:TweenNumber(main2, "Transparency", 1, 1, g.tween.Ease.In.Linear)
+		end
+
+		local decal = main2:FindFirstChild("Decal")
+		if decal then
+			g.tween:TweenNumber(decal, "Transparency", 1, 1, g.tween.Ease.In.Linear)
+		end
+	end
+
+	-- Wait for fades to finish, then reset orientation
+	task.wait(1.1)
+	operableModel:SetPrimaryPartCFrame(
+		operableModel:GetPrimaryPartCFrame() * CFrame.Angles(-math.rad(90), 0, 0)
+	)
+end
+
+function misc.animateTreeRespawn(operableModel)
+	operableModel.Main.Transparency = 1
+	operableModel:SetPrimaryPartCFrame(operableModel.PrimaryPart.CFrame)
+	g.tween:TweenNumber(operableModel.Main, "Transparency", 0, 1, g.tween.Ease.In.Linear)
+	if operableModel.Main2:FindFirstChild("Decal") then
+		g.tween:TweenNumber(operableModel.Main2.Decal, "Transparency", 0, 1, g.tween.Ease.In.Linear)
+	end
+end
+
+function misc.animateMineFall(operableModel)
+	local mine_obj = operableModel.Triggers.Trigger:GetChildren()
+	for i = 1, #mine_obj do
+		if mine_obj[i].ClassName ~= "StringValue" then
+			g.tween:TweenNumber(mine_obj[i], "Transparency", 1, 1, g.tween.Ease.In.Linear)
+		end
+	end
+end
+
+function misc.animateMineRespawn(operableModel)
+	local mine_obj = operableModel.Triggers.Trigger:GetChildren()
+	for i = 1, #mine_obj do
+		if mine_obj[i].ClassName ~= "StringValue" then
+			g.tween:TweenNumber(mine_obj[i], "Transparency", 0, 1, g.tween.Ease.In.Linear)
+		end
+	end
+end
+
+function misc.animateDropItem(itemModel)
+	local itemStats = g.stats.items[itemModel.Name]
+	for i, v in pairs(itemModel:GetChildren()) do
+		if v:IsA("BasePart") then
+			if itemStats.type == "clothing" then
+				g.tween:TweenNumber(v, "Transparency", 0, 0.2, g.tween.Ease.In.Linear)
+			elseif itemStats.type == "deployable" and not g.objects.Items:FindFirstChild(itemModel.Name) then
+				g.tween:TweenNumber(
+					v,
+					"Transparency",
+					g.objects.DeployableItemModel[v.Name].Transparency,
+					0.2,
+					g.tween.Ease.In.Linear
+				)
+			elseif itemStats.type == "faction_deployable" and not g.objects.Items:FindFirstChild(itemModel.Name) then
+				g.tween:TweenNumber(
+					v,
+					"Transparency",
+					g.objects.DeployableItemModel[v.Name].Transparency,
+					0.2,
+					g.tween.Ease.In.Linear
+				)
+			else
+				g.tween:TweenNumber(
+					v,
+					"Transparency",
+					g.objects.Items[itemModel.Name][v.Name].Transparency,
+					0.2,
+					g.tween.Ease.In.Linear
+				)
+			end
+		end
+	end
+end
+
+function misc.animateDoubleDoor(request, operableModel)
+	if operableModel:IsDescendantOf(workspace) then
+		local operableStats = g.stats.operables.double
+		if request then
+			for i, v in pairs(operableModel.Triggers:GetChildren()) do
+				g.tween:TweenCFrame(
+					v,
+					"SetPrimaryPartCFrame",
+					v:GetPrimaryPartCFrame() * operableStats.enabledOffsetCFrame,
+					operableStats.openTime,
+					g.tween.Ease.Out.Quad
+				)
+			end
+		else
+			for i, v in pairs(operableModel.Triggers:GetChildren()) do
+				g.tween:TweenCFrame(
+					v,
+					"SetPrimaryPartCFrame",
+					v:GetPrimaryPartCFrame() * operableStats.disabledOffsetCFrame,
+					operableStats.closeTime,
+					g.tween.Ease.In.Linear
+				)
+			end
+		end
+	end
+end
+
+function misc.animateNormalDoor(request, operableModel)
+	local operableStats = g.stats.operables.normal
+	if request then
+		g.tween:TweenCFrame(
+			operableModel.Triggers.Trigger,
+			"SetPrimaryPartCFrame",
+			operableModel.Triggers.Trigger:GetPrimaryPartCFrame() * operableStats.enabledOffsetCFrame,
+			operableStats.openTime,
+			g.tween.Ease.Out.Quad
+		)
+	else
+		g.tween:TweenCFrame(
+			operableModel.Triggers.Trigger,
+			"SetPrimaryPartCFrame",
+			operableModel.Triggers.Trigger:GetPrimaryPartCFrame() * operableStats.disabledOffsetCFrame,
+			operableStats.closeTime,
+			g.tween.Ease.In.Linear
+		)
+	end
+end
+
+local TextService = game:GetService("TextService")
+
+function misc.sendChat(player, chat, whispering)
+	local playersSeen = {}
+	if tick() - player.Status.LastChat.Value > 0.2 then
+		player.Status.LastChat.Value = tick()
+		local maxDistance
+		if whispering then
+			maxDistance = g.stats.arbs.chatWhisperMaxDistance
+		else
+			maxDistance = g.stats.arbs.chatMaxDistance
+		end
+		local playersSeen = {}
+
+		local TextService = game:GetService("TextService")
+
+		for _, v in ipairs(g.players:GetPlayers()) do
+			if v.Character
+				and v.Character:FindFirstChild("HumanoidRootPart")
+				and (player.Character.HumanoidRootPart.Position
+					- v.Character.HumanoidRootPart.Position).Magnitude < maxDistance
+			then
+				------------------------------------------------------------
+				-- 1) Trim to 150 chars
+				------------------------------------------------------------
+				local raw = string.sub(chat, 1, 150)
+
+				------------------------------------------------------------
+				-- 2) Filter once for *this recipient*
+				------------------------------------------------------------
+				local safeText = "[content blocked]"      -- fallback
+
+				local ok, filterResult = pcall(function()
+					return TextService:FilterStringAsync(
+						raw,
+						player.UserId,                     -- fromUserId
+						Enum.TextFilterContext.PublicChat
+					)
+				end)
+
+				if ok and filterResult then
+					-- most up‑to‑date method name (2025)
+					local ok2, filtered = pcall(function()
+						return filterResult:GetNonChatStringForUserAsync(v.UserId)
+					end)
+
+					-- legacy name fallback (old runtime)
+					if not ok2 then
+						ok2, filtered = pcall(function()
+							return filterResult:GetNonChatStringForBroadcastAsync()
+						end)
+					end
+
+					if ok2 and filtered and #filtered > 0 then
+						safeText = filtered
+					end
+				end
+
+				------------------------------------------------------------
+				-- 3) Send the *filtered* text to this client
+				------------------------------------------------------------
+				g.client.sendToClient(v, "newChat", player, safeText)
+				table.insert(playersSeen, v)
+			end
+		end
+		
+		--[[
+		for i, v in pairs(g.players:GetPlayers()) do
+			if
+				v.Character
+				and v.Character:FindFirstChild("HumanoidRootPart")
+				and (player.Character.HumanoidRootPart.Position - v.Character.HumanoidRootPart.Position).Magnitude
+				< maxDistance
+			then
+				local chat = g.chat:FilterStringAsync(string.sub(chat, 1, 150), player, v)
+				if chat then
+					g.client.sendToClient(v, "newChat", player, chat)
+				end
+				table.insert(playersSeen, v)
+			end
+		end
+		
+		]]
+	end
+	return playersSeen
+end
+
+function misc.RemovePlayerItemsByAmount(player, itemname, itemamount)
+	local TotalItemsRemoved = 0
+
+	for itemindex, item in pairs(player.Status.Items:GetChildren()) do
+		if TotalItemsRemoved >= itemamount then
+			break
+		end
+
+		if item.Name == itemname and TotalItemsRemoved then
+			item:Remove()
+			TotalItemsRemoved = TotalItemsRemoved + 1
+		end
+	end
+end
+
+function misc.GetCollectedTreeLogs(eventtype)
+	local TotalCollectedTreeLogs = 0
+
+	for itemindex, item in pairs(g.inventory.backpack) do
+		if item.name == "Tree log" then
+			TotalCollectedTreeLogs = TotalCollectedTreeLogs + 1
+		end
+	end
+
+	if eventtype == "quest" then
+		return TotalCollectedTreeLogs
+	end
+	if eventtype == "tutorial" then
+		return TotalCollectedTreeLogs
+	end
+end
+
+--[[function misc.QuestCompleted(player)
+	local PlayerQuestFolder = player.Status:FindFirstChild("Quests")
+	local CurrentQuestValue = PlayerQuestFolder:FindFirstChild("currentQuest")
+
+	local TakenQuestData = _G.quests.getQuestDataById(player.Status.Role.Value, CurrentQuestValue.Value)
+
+	local PlayerCompletedQuest = _G.quests.CheckIfQuestCompleted(player, TakenQuestData.QuestData)
+
+	if PlayerCompletedQuest == false then
+		_G.Hamburgeranticheat.PunishPlayer(player, "Exploiting", "7")
+		return
+	end
+
+	if PlayerCompletedQuest == true then
+		PlayerQuestFolder.TreeLogsCollected.Value = 0
+		PlayerQuestFolder.currentQuest.Value = 0
+		PlayerQuestFolder.currentQuestduration.Value = 0
+		PlayerQuestFolder.QuestTaken.Value = false
+		PlayerQuestFolder.currentQuestduration.Value = PlayerQuestFolder.currentQuestduration.Value + 1
+		_G.quests.GivePlayerReward(player, TakenQuestData.QuestData)
+		return
+	end
+end
+
+function misc.takeQuest(player, questdata)
+	local PlayerQuestFolder = player.Status:FindFirstChild("Quests")
+
+	if PlayerQuestFolder.QuestTaken.Value == true then
+		_G.Hamburgeranticheat.PunishPlayer(player, "Exploiting", "5")
+		return
+	end
+
+	if questdata.QuestData.RequiredRole ~= player.Status.Role.Value then
+		_G.Hamburgeranticheat.PunishPlayer(player, "Exploiting", "6")
+		return
+	end
+
+	PlayerQuestFolder.TreeLogsCollected.Value = 0
+	PlayerQuestFolder.currentQuest.Value = questdata.QuestData.QuestName
+	PlayerQuestFolder.currentQuestduration.Value = questdata.QuestData.Duration
+	PlayerQuestFolder.QuestTaken.Value = true
+
+	if PlayerQuestFolder.currentQuestduration.Value > 0 then
+		coroutine.wrap(function()
+			while task.wait(1) do
+				if not player or not player:FindFirstChild("Status") then
+					break
+				end
+
+				if PlayerQuestFolder.QuestTaken.Value == false then
+					break
+				end
+
+				if PlayerQuestFolder.currentQuestduration.Value < 1 then
+					PlayerQuestFolder.TreeLogsCollected.Value = 0
+					PlayerQuestFolder.currentQuest.Value = 0
+					PlayerQuestFolder.currentQuestduration.Value = 0
+					PlayerQuestFolder.QuestTaken.Value = false
+					break
+				end
+
+				PlayerQuestFolder.currentQuestduration.Value = PlayerQuestFolder.currentQuestduration.Value - 1
+			end
+		end)()
+	end
+end ]] -- Quests
+
+function misc.newChat(player, chat)
+	g.interface:newChat(player, chat)
+	if player ~= g.player then
+		g.otherPlayer:get(player):showChat(chat)
+	end
+end
+
+function misc.SendServerChatMessage(player, chat, sender)
+	g.interface:SendServerChatMessage(player, chat, sender)
+end
+
+function misc.animateBullet(itemModel, hitPosition, animateImpact)
+	g.firing:animate(itemModel, hitPosition, animateImpact)
+end
+
+function misc.animateProjectile(itemModel, hitPosition, chargeForce)
+	g.firing:animateProjectile(itemModel, hitPosition, chargeForce)
+end
+
+misc.set = function(pathTable, variable, value)
+	local path = g.status
+	for i, v in pairs(pathTable) do
+		path = path[v]
+	end
+	path[variable] = value
+end
+
+misc.find = function(searchedTable, searchedValue)
+	for i, v in pairs(searchedTable) do
+		if v == searchedValue then
+			return i
+		end
+	end
+end
+
+misc.get = function(searchedTable, searchedValue)
+	local index = misc.find(searchedTable, searchedValue)
+	if index then
+		return searchedTable[index]
+	end
+end
+
+misc.remove = function(searchedTable, searchedValue)
+	local index = misc.find(searchedTable, searchedValue)
+	if index then
+		table.remove(searchedTable, index)
+	end
+end
+
+misc.addPlayer = function(player)
+	if not g.players[player.Name] and player ~= g.player then
+		g.players[player.Name] = g.otherPlayer.new(player)
+	end
+end
+
+misc.removePlayer = function(player)
+	g.players[player.Name] = nil
+end
+
+misc.isPartWithinRegion3 = function(part1, part2)
+	local isInX = (part2.Position.X - (part2.Size.X / 2)) < part1.Position.X
+		and (part2.Position.X + (part2.Size.X / 2)) > part1.Position.X
+	local isInY = (part2.Position.Y - (part2.Size.Y / 2)) < part1.Position.Y
+		and (part2.Position.Y + (part2.Size.Y / 2)) > part1.Position.Y
+	local isInZ = (part2.Position.Z - (part2.Size.Z / 2)) < part1.Position.Z
+		and (part2.Position.Z + (part2.Size.Z / 2)) > part1.Position.Z
+	return isInX and isInY and isInZ
+end
+
+misc.song = function(soundObject, request)
+	if request then
+		if not soundObject.Playing then
+			soundObject:Play()
+		end
+		soundObject.Running.Value = true
+		for i = soundObject.Debounce.Value, 50 do
+			if soundObject.Running.Value then
+				soundObject.Volume = i / 50
+				soundObject.Debounce.Value = i
+				task.wait()
+			else
+				break
+			end
+		end
+	else
+		soundObject.Running.Value = false
+		for i = 50 - soundObject.Debounce.Value, 50 do
+			if not soundObject.Running.Value then
+				soundObject.Volume = 1 - (i / 50)
+				soundObject.Debounce.Value = 50 - i
+				task.wait()
+			else
+				break
+			end
+		end
+		task.wait(3)
+		if not soundObject.Running.Value then
+			soundObject:Stop()
+		end
+	end
+end
+
+local meleeTable = {}
+
+misc.damage = function(player: Player, targetEntity, item, chargeForce, headshot)
+	if player.Status.Health.Value <= 0 then
+		warn("Health is less than 0")
+		return ""
+	end
+	
+	local char = player.Character
+	local checker = char.Head.LabelBillboardGui.SZ
+
+	local itemName = item.Name
+
+	local itemValue = g.item.getFirstEquipped(player, itemName)
+
+	local itemStats = g.stats.items[itemName]
+
+	if not itemStats.weapon and targetEntity:IsA("Player") and targetEntity.Character then
+		if player:DistanceFromCharacter(targetEntity.Character.HumanoidRootPart.Position) > 15 then
+			warn("Character too far away")
+			return ""
+		end
+		local timePosition = os.clock()
+
+
+		if meleeTable[player] and timePosition - meleeTable[player] < itemStats.swingDebounceTime * .7 then
+			warn("swinging before debounce time")
+			return ""
+		end
+
+		meleeTable[player] = os.clock()
+
+		task.spawn(function()
+
+
+			for player, value in pairs(meleeTable) do
+				if timePosition - value > 2 then
+					meleeTable[player] = nil
+				end
+			end
+		end)
+	end
+--[[
+	-- Check projectile cooldown
+	if itemStats.weapon and itemStats.weapon.projectile then
+		local attributeName = string.gsub(item.Name .. " Last Fired", " ", "_")
+		local lastFired = player:GetAttribute(attributeName)
+		if lastFired then
+			print(itemStats.weapon)
+			if os.clock() - lastFired < itemStats.weapon.chargeTime then
+				warn("Projectile cooldown not over")
+				return ""
+			end
+		end
+		player:SetAttribute(attributeName, os.clock())
+	end
+
+	if itemStats.weapon and not itemStats.weapon.projectile then
+		if not item:GetAttribute("reloaded") then
+			warn("No reloaded attribute")
+			return ""
+		end
+
+		if item:GetAttribute("reloaded") < 1 then
+			warn("not enough bullets")
+			return ""
+		end
+
+		item:SetAttribute("reloaded", item:GetAttribute("reloaded") - 1)
+	end
+]]
+	if not targetEntity then
+		return true
+	end
+
+	if not targetEntity.Status:FindFirstChild("Health") then
+		return true --// player hit entity like tree,npc
+	end
+
+
+	if itemValue and targetEntity.Status.Health and targetEntity.Status.Health.Value > 0 then
+
+		local damage = itemStats.damage or itemStats.weapon.damage
+		
+		if itemStats.weapon and itemStats.weapon.projectile and chargeForce then
+			chargeForce = math.max(0, math.min(1, chargeForce))
+			damage = math.max(0, damage * chargeForce)
+		end
+		
+		if itemStats.weapon and itemStats.weapon.projectile and itemStats.weaponType == "bow" and player.Status.Role == "Colonist" and itemStats.description ~= "Hunting bow" then
+			damage *= .85
+		end
+		
+		if headshot and itemStats.headshotDamage then
+			damage = itemStats.headshotDamage
+		end
+
+		if itemStats.weaponEffects then
+			if itemStats.weaponEffects.blur then
+				g.client.sendToClient(targetEntity, "weaponBlur", itemStats.weaponEffects.blur)
+			end
+			
+			if itemStats.weaponEffects.slowness then
+				targetEntity.Status.Slowed.Value = true
+				
+				delay(itemStats.weaponEffects.slowness, function()
+					targetEntity.Status.Slowed.Value = false
+				end)
+			end
+		end
+
+		if targetEntity:IsA("Player") then
+			if targetEntity.Status.GodMode.Value == true then
+				player.Status.Health.Value = player.Status.Health.Value - damage
+				return true
+			elseif checker.Visible == true then 
+				return true
+			elseif targetEntity.Character.Head.LabelBillboardGui.SZ.Visible then
+				return true
+			end
+
+			for i, v in ipairs(player.Status.Zones:GetChildren()) do
+				if v.Value == true then
+					local zoneStats = g.stats.zones[v.Name]
+					if
+						zoneStats.safetyConditions
+						and not misc.find(
+							zoneStats.safetyConditions[player.Status.Role.Value],
+							targetEntity.Status.Role.Value
+						)
+					then
+						return false
+					end
+				end
+			end
+			for i, v in ipairs(targetEntity.Status.Zones:GetChildren()) do
+				if v.Value == true then
+					local zoneStats = g.stats.zones[v.Name]
+					if zoneStats.safetyConditions and not misc.find(zoneStats.safetyConditions[player.Status.Role.Value],targetEntity.Status.Role.Value) then
+						return false
+					end
+				end
+			end
+			if
+				player.Status.Faction.Value ~= 0
+				and player.Status.Faction.Value == targetEntity.Status.Faction.Value
+				and _G.storage.Factions:FindFirstChild(player.Status.Faction.Value)
+				and not _G.storage.Factions[player.Status.Faction.Value].TeamKill.Value
+			then
+				return "faction"
+			end
+			if tick() - player.Status.LastRespawn.Value < _G.stats.arbs.respawnSafeTime then
+				return math.ceil(tick() - player.Status.LastRespawn.Value)
+			end
+			if tick() - targetEntity.Status.LastRespawn.Value < _G.stats.arbs.respawnSafeTime then
+				return math.ceil(tick() - targetEntity.Status.LastRespawn.Value)
+			end
+		end
+
+		targetEntity.Status.Health.Value = targetEntity.Status.Health.Value - damage
+
+		if targetEntity:IsA("Player") then
+			if player.Status.CombatLog.Value < 30 then
+				coroutine.wrap(g.client.toggleCombatLog)(player, 35)
+			end
+
+			if targetEntity.Status.CombatLog.Value < 30 then
+				coroutine.wrap(g.client.toggleCombatLog)(targetEntity, 35)
+			end
+
+			misc.claimBounty(player, targetEntity)
+			if damage >= g.stats.arbs.minimumDamageForBleeding then
+				coroutine.wrap(misc.bleedPlayer)(targetEntity, math.floor(damage / 2), player)
+			end
+		end
+		return true
+	elseif targetEntity.Status.Health.Value <= 0 then
+		return true
+	else
+		return false
+	end
+end
+
+function misc.claimBounty(player, targetPlayer)
+	if
+		player ~= targetPlayer
+		and targetPlayer.Status.Health.Value == 0
+		and (player.Status.Faction.Value == 0 or player.Status.Faction.Value ~= targetPlayer.Status.Faction.Value)
+	then
+		local oldTargetPlayer = targetPlayer
+		local bounty = targetPlayer.Status.Bounty.Value
+		targetPlayer.Status.Bounty.Value = 0
+		player.Status.Pounds.Value = player.Status.Pounds.Value + bounty
+		g.client.sendToClient(
+			player,
+			"newHint",
+			"You claim " .. targetPlayer.Name .. "'s bounty of " .. tostring(bounty) .. " pounds"
+		)
+		g.client.sendToClient(targetPlayer, "newHint", "Your bounty has been claimed by " .. player.Name)
+	end
+end
+
+function misc.offerBounty(player, targetPlayer, pounds)
+	if targetPlayer.Parent == _G.players and targetPlayer ~= player then
+		pounds = math.floor(pounds)
+		--		pounds = math.min(_G.stats.arbs.maximumBountyOffer, pounds)
+		--		pounds = math.max(_G.stats.arbs.minimumBountyOffer, pounds)
+		if pounds <= player.Status.Pounds.Value and pounds > 0 then
+			player.Status.Pounds.Value = player.Status.Pounds.Value - pounds
+			pounds = math.floor(pounds * 0.8)
+			targetPlayer.Status.Bounty.Value = targetPlayer.Status.Bounty.Value + pounds
+			return pounds
+		end
+	end
+end
+
+function misc.placeBounty(player, targetPlayer, pounds)
+	if targetPlayer.Parent == _G.players and targetPlayer == player then
+		pounds = math.floor(pounds)
+		pounds = math.min(_G.stats.arbs.maximumBountyOffer, pounds)
+		pounds = math.max(_G.stats.arbs.minimumBountyOffer, pounds)
+		if pounds <= player.Status.Pounds.Value and pounds > 0 then
+			--	pounds = math.floor(pounds * .8)
+			targetPlayer.Status.Bounty.Value = targetPlayer.Status.Bounty.Value + pounds
+			return pounds
+		end
+	end
+end
+
+function misc.SetDeathNote(player, newdeathnotemsg)
+	if not newdeathnotemsg then
+		player:Kick("incorrect data packet sent to server")
+		return
+	end
+
+	if type(newdeathnotemsg) ~= "string" then
+		player:Kick("incorrect data packet sent to server")
+		return
+	end
+
+	if string.len(newdeathnotemsg) > 35 then
+		player:Kick("incorrect data packet sent to server")
+		return
+	end
+
+	local FiltiredDeathNotemessage = g.chat:FilterStringAsync(newdeathnotemsg, player, player)
+
+	if FiltiredDeathNotemessage then
+		local filteredeathnotedmessage = string.sub(FiltiredDeathNotemessage, 0, 1)
+		local originalsubbedmessage = string.sub(newdeathnotemsg, 0, 1)
+
+		if filteredeathnotedmessage == originalsubbedmessage then
+			g.client.sendToClient(player, "newHint", "Succesfully updated deathnote message")
+			player.Status.DeathNoteMessage.Value = tostring(FiltiredDeathNotemessage)
+		else
+			g.client.sendToClient(player, "newHint", "deathnote message was filtired")
+		end
+	end
+end
+
+-- Utility: returns true if the player holds a staff/admin rank
+-- in the designated Roblox group, false otherwise.
+local STAFF_GROUP_ID   = 34931723      -- change here if the group ever moves
+local MIN_STAFF_RANKID = 2             -- lowest rank that counts as “staff”
+
+misc.checkIfPlayerisAdmin = function(player)
+	-- Default to “guest”
+	local rankInGroup = 0
+
+	-- pcall prevents rare disconnect errors from crashing the script
+	local ok = pcall(function()
+		if player:IsInGroup(STAFF_GROUP_ID) then
+			rankInGroup = player:GetRankInGroup(STAFF_GROUP_ID)
+		end
+	end)
+
+	-- Any error while querying = not an admin
+	if not ok then
+		return false
+	end
+
+	-- Rank 0 is the automatic “not in group / guest” level
+	if rankInGroup == 0 then
+		return false
+	end
+
+	-- Staff check
+	return rankInGroup >= MIN_STAFF_RANKID
+end
+
+
+misc.banPlayer = function(player, userName, playerBanReason)
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true and userName then
+		local success, TargetUserId = pcall(function()
+			
+			return g.players:GetUserIdFromNameAsync(userName)
+		end)
+
+		if success and TargetUserId and TargetUserId ~= player.UserId then
+			_G.DataWrapper.Players.Moderation.BanAsync(TargetUserId, player, playerBanReason)
+			g.client.AdminUsed(16711680,"Admin: " .. player.Name .. "\nAdmin UserId: " .. tostring(player.UserId) .. "\nBanned player Name: " .. userName .. "\nBanned player UserId: " .. tostring(TargetUserId) .. "\nBan Reason: " .. playerBanReason)
+			return true
+		end
+	end
+	return false
+end
+
+misc.unbanPlayer = function(player, userName)
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true and userName then
+		local success, TargetUserId = pcall(function()
+			return g.players:GetUserIdFromNameAsync(userName)
+		end)
+
+		if success and TargetUserId and TargetUserId ~= player.UserId then
+			_G.DataWrapper.Players.Moderation.UnbanAsync(TargetUserId)
+			g.client.AdminUsed(5339256,"Admin: " .. player.Name .. "\nAdmin UserId: " .. tostring(player.UserId) .. "\nUnbanned player Name: " .. userName .. "\nUnbanned player UserId: " .. tostring(TargetUserId))
+			return true
+		end
+	end
+	return false
+end
+
+misc.setPlayerPounds = function(player, userName, userRole, pounds)
+
+	if pounds < 0 then
+		return false
+	end
+	
+	if pounds > 2000 then
+		pounds = 2000
+	end
+	
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true and pounds and userName then
+		local success, TargetUserId = pcall(function()
+			return g.players:GetUserIdFromNameAsync(userName)
+		end)
+
+		if success and TargetUserId then
+			_G.DataWrapper.GlobalUpdates.GiveItem(TargetUserId, userRole, nil, pounds, player)
+			g.client.AdminUsed(4251856,"Sender: " .. player.Name .. "\nSender UserId: " .. tostring(player.UserId) .. "\nRecipient: " .. userName .. "\nRecipient UserId: " .. tostring(TargetUserId) .. "\nRecipient role: " .. userRole .. "\nPounds amount: " .. tostring(pounds))
+			return true
+		end
+	end
+
+	return false
+end
+
+--[[misc.SetStorageSpace = function(player, userName, userRole, bankStorageSpace)
+	if bankStorageSpace < 0 then
+		return false
+	end
+
+	-- Check if the player is an admin
+	if misc.find(g.stats.arbs.admins, player.UserId) then
+		local success, TargetUserId = pcall(function()
+			return g.players:GetUserIdFromNameAsync(userName)
+		end)
+
+		if success and TargetUserId then
+			-- Use DataWrapper to set the storage space
+			local targetPlayer = game.Players:GetPlayerByUserId(TargetUserId)
+			if targetPlayer then
+				_G.DataWrapper.Players.Bank.SetStorageSpace(targetPlayer, userRole, bankStorageSpace)
+				g.client.AdminUsed(
+					"Sender: " .. player.Name ..
+						"\nSender UserId: " .. tostring(player.UserId) ..
+						"\nRecipient: " .. userName ..
+						"\nRecipient UserId: " .. tostring(TargetUserId) ..
+						"\nRecipient role: " .. userRole ..
+						"\nBankspace amount: " .. tostring(bankStorageSpace)
+				)
+				return true
+			else
+				warn("Target player not found.")
+				return false
+			end
+		end
+	end
+
+	return false
+end--]]
+
+misc.givePlayerItem = function(player, userName, userRole, itemAmount, itemName)
+	if itemAmount > 150 then
+		return false
+	end
+
+	if itemAmount < 1 then
+		return false
+	end
+	
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true and itemName and userName and _G.stats.items[itemName] then
+		local success, TargetUserId = pcall(function()
+			return g.players:GetUserIdFromNameAsync(userName)
+		end)
+
+		if success and TargetUserId then
+			_G.DataWrapper.GlobalUpdates.GiveItem(TargetUserId, userRole, { itemName, itemAmount }, nil, player)
+			g.client.AdminUsed(14995466,"Sender: " .. player.Name .. "\nSender UserId: " .. tostring(player.UserId) .. "\nRecipient: " .. userName .. "\nRecipient UserId: " .. tostring(TargetUserId) .. "\nRecipient role: " .. userRole .. "\nItem Name: " .. itemName .. "\nItem amount: " .. tostring(itemAmount))
+		end
+		return true
+	end
+	return false
+end
+
+misc.teleporToPlayer = function(player, userName, userRole)
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true  and userName then
+		if g.players:FindFirstChild(userName) then
+			local PlayerToTeleportTo = g.players:FindFirstChild(userName)
+			_G.teleport(player, PlayerToTeleportTo.Character.HumanoidRootPart.Position)
+			return true
+		end
+	end
+	return false
+end
+
+misc.GodModePlayer = function(player, userName, userRole)
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	
+	if isplayerstaff == false then 
+		player:Kick("you are not staff grrr")
+		return false
+	end
+	
+	if isplayerstaff == true and userName then
+		if g.players:FindFirstChild(userName) then
+			local playertoupdategodmode = g.players:FindFirstChild(userName)
+
+			if playertoupdategodmode:FindFirstChild("Status") then
+				if playertoupdategodmode.Status.GodMode.Value == false then
+					playertoupdategodmode.Status.GodMode.Value = true
+				else
+					playertoupdategodmode.Status.GodMode.Value = false
+				end
+			end
+		end
+		return true
+	end
+	return false
+end
+
+function misc.dropPlayerPounds(player, pounds, position)
+	if pounds > 0 and player.Status.Pounds.Value >= pounds then
+		local poundsModel = _G.objects.Items.Pounds:Clone()
+		poundsModel.Amount.Value = pounds
+		player.Status.Pounds.Value = player.Status.Pounds.Value - pounds
+		poundsModel:SetPrimaryPartCFrame(position)
+		poundsModel.Parent = _G.items
+	end
+end
+
+function misc.dropPlayerMeat(player, position)
+	_G.item.spawn(nil, "Raw human meat", position.Position + Vector3.new(0, 1, 0))
+end
+
+misc.respawnPlayer = function(player)
+	if player.Status.Downed.Value and not player.Status.Respawning.Value and tick() - player.Status.LastDowned.Value >= _G.stats.places[game.PlaceId].respawnCooldown then
+		player.Status.Respawning.Value = true
+		player.Character.Humanoid.Sit = false
+		
+		local CombatPoundToDropAmount = 0
+
+		if player.Status.Pounds.Value>=150 then
+			CombatPoundToDropAmount = player.Status.Pounds.Value * 0.1
+		end
+
+		if CombatPoundToDropAmount >= 100 then
+			CombatPoundToDropAmount = 100
+		end
+		
+		misc.dropPlayerPounds(player,CombatPoundToDropAmount,player.Character.HumanoidRootPart.CFrame)
+		--//misc.dropPlayerMeat(player,player.Character.HumanoidRootPart.CFrame )
+		local spawnCFrame
+		if _G.stats.places[game.PlaceId].conquering and player.Status.Faction.Value ~= 0 and _G.storage.Islands[game.PlaceId].Faction.Value == player.Status.Faction.Value then
+			local spawnObject = _G.mouseFilter.Spawns.Conqueror["1"]
+			spawnCFrame = CFrame.new(math.random(spawnObject.Position.X - (spawnObject.Size.X / 2),spawnObject.Position.X + (spawnObject.Size.X / 2)),spawnObject.Position.Y + 3.5,math.random(spawnObject.Position.Z - (spawnObject.Size.Z / 2),spawnObject.Position.Z + (spawnObject.Size.Z / 2)))
+		else
+			spawnCFrame = CFrame.new(player.Status.SpawnPosition.Value)
+		end
+		for i, v in pairs(_G.operables.Deployables:GetChildren()) do
+			if v.Status.Type.Value == "spawn" and v.Status.Owner.Value == player then
+				spawnCFrame = CFrame.new(v.Status.SpawnPosition.Value)
+				break
+			end
+		end
+
+		_G.teleport(player, spawnCFrame.Position)
+		player.Status.Health.Value = player.Status.Health.MaxValue
+		player.Status.Respawning.Value = false
+		player.Status.LastRespawn.Value = tick()
+	end
+end
+
+misc.downPlayer = function(player)
+	if not player.Status.Respawning.Value then
+		player.Status.Health.Value = 0
+	end
+end
+
+misc.weldModel = function(model, character)
+	for i, v in pairs(model:GetChildren()) do
+		if v:IsA("BasePart") and v ~= model.PrimaryPart and not v:FindFirstChild("CustomWeld") then
+			local weldObject = Instance.new("Weld", v)
+			weldObject.Part0 = v
+			weldObject.Part1 = model.PrimaryPart
+			weldObject.C0 = v.CFrame:inverse() * model.PrimaryPart.CFrame
+		elseif v:IsA("BasePart") and v ~= model.PrimaryPart and v:FindFirstChild("CustomWeld") then
+			local weldObject = Instance.new("Weld", v)
+			weldObject.Part0 = character:FindFirstChild(v:FindFirstChild("CustomWeld").Value)
+			weldObject.Part1 = v
+			
+			if v:FindFirstChild("CustomCFrame") then
+				weldObject.C0 = v.CustomCFrame.Value
+			end
+		end
+	end
+end
+
+misc.bleedPlayer = function(targetPlayer, damage, player)
+	if not targetPlayer.Status.Downed.Value then
+		damage = math.abs(damage)
+		if targetPlayer.Status.Bleed.Value == 0 then
+			targetPlayer.Status.Bleed.Value = damage
+			targetPlayer.Character.Torso.Bleed.Enabled = true
+			while task.wait(4) and targetPlayer and targetPlayer.Status.Bleed.Value > 0 and not targetPlayer.Status.Downed.Value do
+				if math.fmod(targetPlayer.Status.Bleed.Value, 5) == 0 then
+					coroutine.wrap(misc.bloodDrip)(targetPlayer)
+				end
+				targetPlayer.Status.Bleed.Value = targetPlayer.Status.Bleed.Value - 1
+				targetPlayer.Status.Health.Value = targetPlayer.Status.Health.Value - 1
+				if player then
+					misc.claimBounty(player, targetPlayer)
+				end
+			end
+			targetPlayer.Status.Bleed.Value = 0
+			if targetPlayer.Character then
+				targetPlayer.Character.Torso.Bleed.Enabled = false
+			end
+		else
+			targetPlayer.Status.Bleed.Value = targetPlayer.Status.Bleed.Value + damage
+		end
+	end
+end
+
+misc.shovelChest = function(player,type, model)
+	
+	if model.Status.Available.Value and (player.Character.HumanoidRootPart.Position - model.PrimaryPart.Position).Magnitude < 30 and model.Status.Type.Value == "lootChest" then
+		
+		model.Status.Available.Value = false
+		
+		local chestModel = model:FindFirstChild("ChestModel")
+
+		if chestModel then
+			
+			chestModel.Transparency = 0
+			
+			local newSound = Instance.new("Sound")
+			newSound.SoundId = "rbxassetid://" .. 82357128779870
+			newSound.Parent = chestModel
+			newSound:Play()
+			
+			local newTween = game:GetService("TweenService"):Create(chestModel, TweenInfo.new(.5), {
+				Position = chestModel.Position + Vector3.new(0, 3, 0)
+			}):Play()
+			
+			local newItem : BoolValue = Instance.new("BoolValue")
+			newItem.Name = "Chest items"
+			newItem.Parent = player.Status.Items
+			
+			g.client.chestFound(16711680, player.Name .. " has opened a chest.")
+
+			delay(10, function()
+				model:Destroy()
+			end)
+		end
+	end
+end
+
+misc.showDrumsticks = function(player, character)
+	local leftDrumstick = g.storage.LeftDrumstick:Clone()
+	local rightDrumstick = g.storage.RightDrumstick:Clone()
+
+	leftDrumstick.Parent = character
+	rightDrumstick.Parent = character
+
+	leftDrumstick.Weld.Part0 = character:FindFirstChild("Left Arm")
+	rightDrumstick.Weld.Part0 = character:FindFirstChild("Right Arm")
+end
+
+misc.hideDrumsticks = function(player, character)
+	if character:FindFirstChild("LeftDrumstick") then
+		character:FindFirstChild("LeftDrumstick"):Destroy()
+	end
+	
+	if character:FindFirstChild("RightDrumstick") then
+		character:FindFirstChild("RightDrumstick"):Destroy()
+	end
+end
+
+misc.enableMusic = function(player, model, name, newMusic)
+	if newMusic then
+		local newSound = newMusic:Clone()
+		newSound.Parent = model:FindFirstChild("Handle")
+		newSound:Play()
+	end
+end
+
+misc.disableMusic = function(player, model, name)
+	if model:FindFirstChild("Handle"):FindFirstChildOfClass("Sound") then
+		model:FindFirstChild("Handle"):FindFirstChildOfClass("Sound"):Destroy()
+	end
+end
+
+misc.syncMusic = function(player, char, model, storage)
+	
+	print("sync")
+	
+	local soundDesc = char:FindFirstChild("SongName", true)
+
+	if soundDesc and storage then
+		local sound = soundDesc.Parent
+		local newSound : Sound = storage:FindFirstChild(sound.Name):Clone()
+
+		if model:FindFirstChild("Handle"):FindFirstChildOfClass("Sound") then
+			model:FindFirstChild("Handle"):FindFirstChildOfClass("Sound"):Destroy()
+		end
+
+		newSound.Parent = model:FindFirstChild("Handle")
+		newSound:Play()
+		newSound.TimePosition = sound.TimePosition
+	end
+end
+
+misc.updateBlockingPlayer = function(player, request)
+	player.Status.Blocking.Value = request
+end
+
+misc.hitBlockingPlayer = function(player, targetPlayer)
+	g.client.sendToClient(targetPlayer, "parryPlayer")
+end
+
+misc.parryPlayer = function()
+	g.integrity:depleteStamina(g.stats.arbs.parryStaminaCost)
+	if g.inventory.itemDrawn then
+		g.inventory.itemDrawn:endBlock()
+	end
+end
+
+misc.bandagePlayer = function(player, targetPlayer)
+	local itemValue = g.item.getFirstEquipped(player, "Bandage") or g.item.getFirstEquipped(player, "Herbal bandage")
+	
+	if not itemValue then return end
+	
+	local itemName = itemValue.Name
+
+	-- only valid if they’re bleeding or below max health
+	if targetPlayer.Status.Bleed.Value == 0
+		and targetPlayer.Status.Health.Value >= targetPlayer.Status.Health.MaxValue then
+		return
+	end
+
+	-- only within 10 studs
+	if (player.Character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude >= 10 then
+		return
+	end
+
+	-- Prevent **self‑revive** exploit only when you’re downed yourself
+	if player == targetPlayer and targetPlayer.Status.Downed.Value then
+		return
+	end
+
+	-- consume the bandage
+	itemValue:Destroy()
+	-- clear the bleed
+	targetPlayer.Status.Bleed.Value = 0
+
+	-- figure out how much to heal
+	local healAmt = (player == targetPlayer)
+		and g.stats.items[itemName].healAmountSelf
+		or g.stats.items[itemName].healAmountOther
+
+	-- if you’re healing someone else who’s downed, clear their downed flag
+	if targetPlayer.Status.Downed.Value then
+		targetPlayer.Status.Downed.Value = false
+	end
+
+	-- apply and clamp the heal
+	targetPlayer.Status.Health.Value = math.min(
+		targetPlayer.Status.Health.Value + healAmt,
+		targetPlayer.Status.Health.MaxValue
+	)
+
+	-- feedback to the healed player
+	if player ~= targetPlayer then
+		g.client.sendToClient(targetPlayer, "newHint", player.Name .. " bandages you")
+	end
+end
+
+
+misc.bloodDrip = function(player)
+	coroutine.wrap(g.client.sendToAllClients)("animateBloodDrip", player)
+end
+
+misc.resetPlayerPosition = function(player)
+	player.Status.ResetLastSafePosition.Value = true
+	return true
+end
+
+
+
+
+misc.lootPlayer = function(player, targetPlayer, itemName)
+	if player.Status.Health.Value <= 0 then
+		return
+	end
+	local status = player.Status
+	local totalWeight = 0
+	for i,v in status.Items:GetChildren() do
+		local n = v.Name
+		local tstats = g.stats.items[n]
+		local weight = tstats.weight
+		totalWeight += weight
+	end
+
+	if totalWeight > 525 then
+		return
+	end
+	local itemValue = targetPlayer.Status.Items:FindFirstChild(itemName)
+
+	if not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	if targetPlayer.Status.Downed.Value and not player.Status.Downed.Value and (player.Character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).magnitude < 10 and itemValue and (g.stats.items[itemValue.Name].canBeLooted or (g.stats.items[itemValue.Name].illegal and targetPlayer.Status.Role.Value ~= "HBC" --[[and targetPlayer.Status.Role.Value~="NWC"]])) then
+		itemValue.Value = false
+		itemValue.Parent = player.Status.Items
+	end
+end
+
+misc.lootStorage = function(player, operableModel, itemName)
+	local itemValue = operableModel.Status.Items:FindFirstChild(itemName)
+	if
+		not player.Status.Downed.Value
+		and (player.Character.HumanoidRootPart.Position - operableModel.PrimaryPart.Position).Magnitude < 10
+		and itemValue
+	then
+		itemValue.Value = false
+		itemValue.Parent = player.Status.Items
+	end
+end
+
+misc.lootFactionStorage = function(player, operableModel, itemName, faction)
+	local itemValue = operableModel.Status.Items:FindFirstChild(itemName)
+	if
+		not player.Status.Downed.Value
+		and (player.Character.HumanoidRootPart.Position - operableModel.PrimaryPart.Position).Magnitude < 10
+		and itemValue
+	then
+		itemValue.Value = false
+		itemValue.Parent = player.Status.Items
+	end
+end
+
+misc.setPlayerRole = function(player, roleName)
+	local roleStats = g.stats.roles[roleName]
+	
+	local isplayerstaff = _G.misc.checkIfPlayerisAdmin(player)
+	local isInMainGroup = player:IsInGroup(g.stats.arbs.mainGroupID)
+	--local isInSubMainGroup = player:IsInGroup(g.stats.arbs.SubmainGroupID)
+	
+	local resetLastSafePosition = player.Status.ResetLastSafePosition
+	
+	if roleName == "HBC" and player.Status.Preparing.Value == false and ((roleStats.type == "department" and isInMainGroup and player:IsInGroup(roleStats.groupID))or (roleStats.type == "main" and isInMainGroup and player:GetRankInGroup(g.stats.arbs.mainGroupID) >= roleStats.rankID)or roleStats.type == "default"or isplayerstaff == true) then
+		player.Status.Preparing.Value = true
+		player.Status.Role.Value = roleName
+		g.client.setupRoleData(player, roleName,resetLastSafePosition.Value)
+		return true
+	elseif player.Status.Preparing.Value == false and ((roleStats.type == "department" and player:IsInGroup(roleStats.groupID))	or roleStats.type == "default" 	or isplayerstaff == true) then
+		player.Status.Preparing.Value = true
+		player.Status.Role.Value = roleName
+		g.client.setupRoleData(player, roleName,resetLastSafePosition.Value)
+		return true
+
+	--[[elseif roleName == "NWC" and player.Status.Preparing.Value == false and ((roleStats.type == "department" and isInSubMainGroup and player:IsInGroup(roleStats.groupID))or (roleStats.type == "secondmain" and isInSubMainGroup and player:GetRankInGroup(g.stats.arbs.SubmainGroupID) >= roleStats.rankID)or roleStats.type == "default"or isplayerstaff == true)then
+		player.Status.Preparing.Value = true
+		player.Status.Role.Value = roleName
+		g.client.setupRoleData(player, roleName,resetLastSafePosition.Value)
+		return true]]
+	end
+end
+
+
+
+
+
+misc.setInGrass = function(player, request, isWalking)
+	isWalking = isWalking or player.Character.Humanoid.MoveDirection ~= Vector3.new(0, 0, 0)
+	local rightGrassSteps = player.Character["Right Leg"].GrassSteps
+	local leftGrassSteps = player.Character["Left Leg"].GrassSteps
+
+	if request then
+		rightGrassSteps.Enabled = isWalking
+		leftGrassSteps.Enabled = isWalking
+		player.Character.Head:WaitForChild("Running").SoundId = "rbxassetid://130873495"
+		player.Character.Head.Running.PlaybackSpeed = 1
+	else
+		rightGrassSteps.Enabled = false
+		leftGrassSteps.Enabled = false
+		player.Character.Head:WaitForChild("Running").SoundId = "rbxassetid://577413899"
+		player.Character.Head.Running.PlaybackSpeed = 1.3
+	end
+end
+
+misc.setWarmthLow = function(player, request)
+	player.Character.Head.Breath.Enabled = request
+end
+
+misc.travelPlayer = function(player, travelPointName)
+	if
+		not player.Status.Downed.Value
+		and ((player.Character.HumanoidRootPart.Position - _G.operables.Main.Travelling.PrimaryPart.Position).Magnitude < 10 or
+			(player.Character.HumanoidRootPart.Position - _G.operables.Main.NativeTravelling.PrimaryPart.Position).Magnitude
+			< 10 or 
+			(player.Character.HumanoidRootPart.Position - _G.operables.Main.TseTravelling.PrimaryPart.Position).Magnitude < 10)
+	then
+		
+		local travelCFrame = _G.mouseFilter.TravelPoints[travelPointName].CFrame
+		_G.teleport(player, travelCFrame.Position)
+	end
+end
+
+misc.checkPlayerStatus = function(player)
+	if player.Status.Downed.Value or player.Character.Humanoid.Sit then
+		return true
+	end
+end
+
+misc.setupSounds = function() end
+
+function misc.damageHungerPlayer(player)
+	
+	if player.Status.GodMode.Value == true then
+		player.Status.Hunger.Value = _G.stats.arbs.defaultMaxHunger
+		return
+	end
+	
+	player.Status.Health.Value = player.Status.Health.Value - _G.stats.arbs.hungerDepletedDamage
+end
+
+function misc.getPlayerPrimaryGroup(player)
+	local groups = (_G.groupService or g.groupService):GetGroupsAsync((player or g.player).UserId)
+	for i, v in pairs(groups) do
+		if v.IsPrimary then
+			return v
+		end
+	end
+end
+
+function misc.setupFaction(groupID)
+	-- required to work with mock datastores
+	groupID = tostring(groupID)
+
+	local factionFolder = _G.storage.Factions:FindFirstChild(groupID)
+	if not factionFolder then
+		factionFolder = Instance.new("Folder")
+		factionFolder.Name = groupID
+		factionFolder.Parent = _G.storage.Factions
+
+		local RawDescriptionValue = Instance.new("StringValue")
+		RawDescriptionValue.Name = "RawDescription"
+		RawDescriptionValue.Value = ""
+		RawDescriptionValue.Parent = factionFolder
+
+		local FactionNameValue = Instance.new("StringValue")
+		FactionNameValue.Name = "FName"
+		FactionNameValue.Value = ""
+		FactionNameValue.Parent = factionFolder
+
+		local FactionEmblemValue = Instance.new("StringValue")
+		FactionEmblemValue.Name = "Emblem"
+		FactionEmblemValue.Value = ""
+		FactionEmblemValue.Parent = factionFolder
+
+		local FactionOwnerValue = Instance.new("StringValue")
+		FactionOwnerValue.Name = "Owner"
+		FactionOwnerValue.Value = ""
+		FactionOwnerValue.Parent = factionFolder
+
+		local FactionAcronymValue = Instance.new("StringValue")
+		FactionAcronymValue.Name = "Acronym"
+		FactionAcronymValue.Value = ""
+		FactionAcronymValue.Parent = factionFolder
+
+		local FactionDescriptionValue = Instance.new("StringValue")
+		FactionDescriptionValue.Name = "Description"
+		FactionDescriptionValue.Value = ""
+		FactionDescriptionValue.Parent = factionFolder
+
+		local FactionRoleValue = Instance.new("StringValue")
+		FactionRoleValue.Name = "Role"
+		FactionRoleValue.Value = ""
+		FactionRoleValue.Parent = factionFolder
+
+		local FactionAcronymColorValue = Instance.new("Color3Value")
+		FactionAcronymColorValue.Name = "AcronymColor"
+		FactionAcronymColorValue.Value = Color3.fromRGB(255, 255, 255)
+		FactionAcronymColorValue.Parent = factionFolder
+
+		local FactionAcronymbgColorValue = Instance.new("Color3Value")
+		FactionAcronymbgColorValue.Name = "AcronymbgColor"
+		FactionAcronymbgColorValue.Value = Color3.fromRGB(255, 255, 255)
+		FactionAcronymbgColorValue.Parent = factionFolder
+
+		local FactionTeamKillValue = Instance.new("BoolValue")
+		FactionTeamKillValue.Name = "TeamKill"
+		FactionTeamKillValue.Value = true
+		FactionTeamKillValue.Parent = factionFolder
+
+		local FactionMinimumRankValue = Instance.new("IntValue")
+		FactionMinimumRankValue.Name = "MinimumRank"
+		FactionMinimumRankValue.Value = 0
+		FactionMinimumRankValue.Parent = factionFolder
+
+		local FactionHasUniformValue = Instance.new("BoolValue")
+		FactionHasUniformValue.Name = "HasUniform"
+		FactionHasUniformValue.Value = false
+		FactionHasUniformValue.Parent = factionFolder
+
+		local FactionShirtIdValue = Instance.new("IntValue")
+		FactionShirtIdValue.Name = "ShirtID"
+		FactionShirtIdValue.Value = 133068745700957
+		FactionShirtIdValue.Parent = factionFolder
+
+		local FactionPantsIdValue = Instance.new("IntValue")
+		FactionPantsIdValue.Name = "PantsID"
+		FactionPantsIdValue.Value = 124309406549080
+		FactionPantsIdValue.Parent = factionFolder
+
+		factionFolder.HasUniform.Value = _G.dataStoreService
+			:GetDataStore("TNF_Factions1", groupID)
+			:GetAsync("hasUniform") == true
+		misc.updateFaction(groupID)
+
+		spawn(function()
+			while not factionFolder.HasUniform.Value do
+				factionFolder.HasUniform.Value = _G.dataStoreService
+					:GetDataStore("TNF_Factions1", groupID)
+					:GetAsync("hasUniform") == true
+				task.wait(60)
+			end
+		end)
+
+		spawn(function()
+			while task.wait(30) and factionFolder.Parent do
+				misc.updateFaction(groupID)
+			end
+		end)
+	end
+	return factionFolder
+end
+
+function misc.updateFaction(groupID)
+	local groupInfo = _G.groupService:GetGroupInfoAsync(groupID)
+	local factionFolder = _G.storage.Factions[groupID]
+	if factionFolder.RawDescription.Value == "" or factionFolder.RawDescription.Value ~= groupInfo.Description then
+		factionFolder.RawDescription.Value = groupInfo.Description
+		local readingDescription = false
+		local acronym
+		local role
+		local teamKill
+		local acronymcolor
+		local acronymbgcolor
+		local minimumRank
+		local description
+		local shirtID
+		local pantsID
+
+		for word in string.gmatch(groupInfo.Description, "%S+") do
+			--teamKill = "true"
+			if string.sub(word, 1, 21) == "faction_minimum_rank:" then
+				minimumRank = tonumber(string.sub(word, 22))
+			elseif string.sub(word, 1, 25) == "faction_description:start" then
+				readingDescription = true
+			elseif string.sub(word, 1, 23) == "faction_description:end" then
+				readingDescription = false
+			--[[elseif string.sub(word, 1, 18) == "faction_team_kill:" then
+				teamKill = string.lower(string.sub(word, 19)) == "true"]]--
+			elseif string.sub(word, 1, 13) == "faction_role:" then
+				word = string.lower(string.sub(word, 14))
+				if word == "HBC" then
+					word = string.lower("Huron's Bay Company")
+			--[[	elseif  word == "NWC" then
+					word = string.lower("Comanche Tribe") ]]
+				end
+				for i, v in pairs(_G.stats.roles) do
+					if string.lower(i) == word then
+						role = i
+					end
+				end
+			elseif string.sub(word, 1, 16) == "faction_acronym:" then
+				word = string.upper(string.sub(word, 17, 27))
+				if
+					string.len(word) >= 3
+					and (groupInfo.Id == _G.stats.arbs.mainGroupID or not string.find(word, "HBC") --[[or not string.find(word, "NWC")]])
+				then
+					acronym = word
+				end
+			elseif string.sub(word, 1, 19) == "roblox.com/library/" then
+				local assetID
+				for _word in string.gmatch(string.sub(word, 20), "([^/]+)/([^/]+)") do
+					assetID = _word
+					break
+				end
+				if string.sub(word, string.len(word) - 12) == "faction_shirt" then
+					shirtID = tonumber(assetID)
+				end
+				if string.sub(word, string.len(word) - 12) == "faction_pants" then
+					pantsID = tonumber(assetID)
+				end
+			elseif string.sub(word, 1, 14) == "faction_color:" then
+				local colors = {}
+				for color in string.gmatch(string.sub(word, 15), "%d+") do
+					table.insert(colors, color)
+				end
+				local r = tonumber(colors[1])
+				local g = tonumber(colors[2])
+				local b = tonumber(colors[3])
+				if r and g and b then
+					acronymcolor = Color3.fromRGB(
+						math.max(0, math.min(255, r)),
+						math.max(0, math.min(255, g)),
+						math.max(0, math.min(255, b))
+					)
+					acronymbgcolor = Color3.fromRGB(
+						math.max(0, math.min(255, r)),
+						math.max(0, math.min(255, g)),
+						math.max(0, math.min(255, b))
+					)
+				end
+			elseif readingDescription then
+				if description then
+					description = description .. " " .. word
+				else
+					description = word
+				end
+			end
+		end
+		factionFolder.FName.Value = groupInfo.Name
+		factionFolder.Emblem.Value = groupInfo.EmblemUrl
+		factionFolder.Owner.Value = groupInfo.Owner.Name
+		factionFolder.Acronym.Value = acronym or string.upper(string.sub(groupInfo.Name, 1, 5))
+		factionFolder.Description.Value = description or ""
+		factionFolder.Role.Value = role or ""
+		factionFolder.TeamKill.Value = true
+		factionFolder.AcronymColor.Value = acronymcolor or Color3.new(255, 255, 255)
+		factionFolder.AcronymbgColor.Value = acronymbgcolor or Color3.new(255, 255, 255)
+		factionFolder.MinimumRank.Value = minimumRank or 0
+		if factionFolder.HasUniform.Value then
+			factionFolder.ShirtID.Value = shirtID or 0
+			factionFolder.PantsID.Value = pantsID or 0
+		end
+	end
+end
+
+function misc.checkPlayerFaction(player)
+	local playerGroup
+	if player.Status.Role.Value == "HBC" then
+		for i, v in pairs(_G.groupService:GetGroupsAsync(player.UserId)) do
+			if v.Id == _G.stats.arbs.mainGroupID then
+				playerGroup = v
+				break
+			end
+		end
+--[[	elseif player.Status.Role.Value == "NWC" then
+		for i, v in pairs(_G.groupService:GetGroupsAsync(player.UserId)) do
+			if v.Id == _G.stats.arbs.SubmainGroupID then
+				playerGroup = v
+				break
+			end
+		end ]]
+
+	else
+		playerGroup = misc.getPlayerPrimaryGroup(player)
+	end
+
+	if playerGroup then
+		playerGroup.Id = playerGroup.Id and tostring(playerGroup.Id)
+	end
+
+	if
+		playerGroup
+		and (
+			_G.storage.Factions:FindFirstChild(playerGroup.Id)
+				or _G.dataStoreService:GetDataStore("TNF_Factions1", playerGroup.Id):GetAsync("timeCreated")
+		)
+	then
+		local factionFolder = misc.setupFaction(playerGroup.Id)
+		if
+			(factionFolder.Role.Value == "" or factionFolder.Role.Value == player.Status.Role.Value)
+			and factionFolder.MinimumRank.Value <= playerGroup.Rank
+		then
+			if not player or not player.Character then
+				return
+			end
+
+			player.Status.Faction.Value = playerGroup.Id
+			local labelGui = player.Character.Head.LabelBillboardGui
+			labelGui.GroupLabel.Text = factionFolder.Acronym.Value .. " | " .. playerGroup.Role
+			labelGui.GroupLabel.TextColor3 = factionFolder.AcronymColor.Value
+		else
+			misc.resetPlayerFaction(player)
+		end
+	elseif _G.stats.places[game.PlaceId].conquering then
+		player:Kick("You must stay in your faction to keep conquering islands!")
+	else
+		misc.resetPlayerFaction(player)
+	end
+end
+
+function misc.resetPlayerFaction(player)
+	if not player or not player.Character or not player.Character:FindFirstChild("Head") then
+		return
+	end
+
+	player.Status.Faction.Value = 0
+
+	local labelGui = player.Character.Head.LabelBillboardGui
+	labelGui.GroupLabel.Text = ""
+end
+
+function misc.untrap(player : Player)
+	player.Status.CurrentlyTrapped.Value = false
+end
+
+function misc.claimDailyReward(player)
+	local CanClaim, NewSpree = _G.DataWrapper.Players.Rewards.ClaimDailyReward(player)
+
+	if CanClaim then
+		player.Status.LastDailyReward.Value = os.time()
+
+		local reward
+
+		local IsInMainGroup = pcall(function()
+			if not player:IsInGroup(34976564) then
+				error("[ERROR HANDLER] Player is not in the main group!")
+			end
+		end)
+
+		local IsInSubMainGroup = pcall(function()
+			if not player:IsInGroup(34976564) then
+				error("[ERROR HANDLER] Player is not in the Sub main group!")
+			end
+		end)
+
+		if IsInMainGroup then
+			reward = g.stats.daily[player.Status.Role.Value]["groupmember"][NewSpree]
+		elseif IsInSubMainGroup then
+			reward = g.stats.daily[player.Status.Role.Value]["groupmember"][NewSpree]
+		else
+			reward = g.stats.daily[player.Status.Role.Value]["nongroupmember"][NewSpree]
+		end
+
+		if not reward then
+			-- reset spree, reached the max amount
+			reward = g.stats.daily[player.Status.Role.Value]["nongroupmember"][0]
+			_G.DataWrapper.Players.Rewards.ResetDailyRewardSpree(player)
+		end
+
+		if reward.pounds then
+			player.Status.Pounds.Value = player.Status.Pounds.Value + reward.pounds
+		end
+
+		if reward.items then
+			for item, count in pairs(reward.items) do
+				for j = 1, count do
+					_G.item.add(player, item)
+				end
+			end
+		end
+
+		return true
+	end
+end
+
+function misc.changeTitle(player, title)
+	if player.Status.TitlesFolder:FindFirstChild(title) then
+		player.Status.Title.Value = title
+		local labelGui = player.Character.Head.LabelBillboardGui
+		labelGui.NameLabel.Text = (player.Status.Title.Value .. " " .. player.Name)
+
+		if title == "DEVELOPER | " then
+			labelGui.NameLabel.TextColor3 = Color3.fromRGB(204, 0, 255)
+		elseif title == "STAFF | " then
+			labelGui.NameLabel.TextColor3 = Color3.fromRGB(187, 243, 255)
+		elseif title == "GOD KING | " then
+			labelGui.NameLabel.TextColor3 = Color3.fromRGB(203, 0, 0)
+		end
+
+	end
+end
+
+function misc.resetTitle(player)
+	local labelGui = player.Character.Head.LabelBillboardGui
+	labelGui.NameLabel.Text = player.Name
+
+	if player.Status.Role.Value == "Colonist" then
+		labelGui.NameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	elseif player.Status.Role.Value == "HBC" then
+		labelGui.NameLabel.TextColor3 = Color3.fromRGB(70, 130, 180)
+	elseif player.Status.Role.Value == "Native" then
+		labelGui.NameLabel.TextColor3 = Color3.fromRGB(138, 99, 100)
+	end
+end
+
+function misc.addTitle(player, title)
+	if misc.find(_G.stats.titles, title) and not player.Status.TitlesFolder:FindFirstChild(title) then
+		local newTitle = Instance.new("StringValue")
+		newTitle.Name = title
+		newTitle.Value = title
+		newTitle.Parent = player.Status.TitlesFolder
+	end
+end
+
+function misc.animatePlayerFire(player, itemModel, ...)
+	local hits = { ... }
+	local itemStats = _G.stats.items[itemModel.Name]
+
+	if
+		(itemStats.weapon.scattershot and (#hits / 2) > itemStats.weapon.ammoAmount)
+		or (not itemStats.weapon.scattershot and (#hits / 2) > 1)
+	then
+		return
+	end
+	if itemStats.weapon.projectile then
+		for i = 1, #hits do
+			if math.fmod(i, 2) == 1 then
+				local hitPosition = hits[i]
+				local chargeForce = hits[i + 1]
+				_G.client.sendToOtherClients(player, "animateProjectile", itemModel, hitPosition, chargeForce)
+			end
+		end
+	else
+		for i = 1, #hits do
+			if math.fmod(i, 2) == 1 then
+				local hitPosition = hits[i]
+				local hitObject = hits[i + 1]
+				_G.client.sendToOtherClients(player, "animateBullet", itemModel, hitPosition, hitObject ~= false)
+			end
+		end
+	end
+end
+
+function misc.isOsTimeBeforeOsTime(player, osdate1, osdate2)
+	if osdate2 == 0 then
+		return true
+	end
+
+	local timepassedbeforeclaim = osdate1 - osdate2
+
+	if timepassedbeforeclaim > 86400 then
+		return true
+	end
+
+	return false
+end
+
+function misc.travelPlayerIsland(player, placeID)
+	if player.Status.TeleportingPlace.Value ~= 0 then
+		return "alreadyTeleporting"
+	end
+
+	if player.Status.Faction.Value == 0 then
+		return "faction"
+	end
+
+	if player.Status.TradingPost.Value and player.Status.TradingPost.Value.Parent ~= nil then
+		return "tradingPostPlaced"
+	end
+
+	if _G.storage.Islands[placeID].PlayerAmount.Value >= 50 then
+		return "playerAmount"
+	end
+
+	player.Status.TeleportingPlace.Value = placeID
+
+	if not game:GetService("RunService"):IsStudio() then
+		_G.DataWrapper.ListenToHopReady(player, function()
+			local accessCode = _G.storage.Islands[placeID].AccessCode.Value
+			local teleportOptions = Instance.new("TeleportOptions")
+
+			teleportOptions.ReservedServerAccessCode = accessCode
+			teleportOptions:SetTeleportData({ role = player.Status.Role.Value })
+
+			_G.teleportService:TeleportAsync(placeID, { player }, teleportOptions)
+		end)
+
+		_G.DataHandler.Release(player)
+	else
+		player.Status.TeleportingPlace.Value = 0
+	end
+
+	return
+end
+
+function misc.FindClosestTreeNearPlayer(player)
+	local closesttreenearme = nil
+
+	for i, v in pairs(g.operablesF.Resources:GetChildren()) do
+		if v.Name == "Tree1" or v.Name == "Tree2" or v.Name == "Tree3" or v.Name == "Tree4" or v.Name == "Tree5" or v.Name == "NewTreeHealthy" or v.Name == "NewTreeDead" or v.Name == "NewTreePartiallyHealthy" then
+			if v:FindFirstChild("Status") then
+				local treeaviablevalue = v.Status:FindFirstChild("Available")
+
+				if treeaviablevalue.Value == true then
+					if closesttreenearme == nil then
+						closesttreenearme = v
+					else
+						if
+							(player.Character.HumanoidRootPart.Position - v.PrimaryPart.Position).Magnitude
+							< (player.Character.HumanoidRootPart.Position - closesttreenearme.PrimaryPart.Position).Magnitude
+						then
+							closesttreenearme = v
+						end
+					end
+				end
+			end
+		end
+	end
+	return closesttreenearme
+end
+
+function misc.FindClosestTreeLogWithinDistance(player, treelogdistance)
+	local closesttreenearme = {}
+
+	for i, v in pairs(g.items:GetChildren()) do
+		if v.Name == "Tree log" then
+			if (player.Character.HumanoidRootPart.Position - v.PrimaryPart.Position).Magnitude < treelogdistance then
+				table.insert(closesttreenearme, v)
+			end
+		end
+	end
+	return closesttreenearme
+end
+
+function misc.StartTutorial(player, TutorialStage)
+	coroutine.wrap(function()
+		if not TutorialStage then
+			warn("StartTutorial: TutorialStage is nil")
+			return
+		end
+
+		if not g.tutorial.TutorialStages["TutorialStage" .. TutorialStage] then
+			warn("StartTutorial: TutorialStage not found in TutorialStages")
+			return
+		end
+
+		--// this is fired when tutorial just starts on client
+
+		local CurrentTutorialStageData = g.tutorial.TutorialStages["TutorialStage" .. TutorialStage]
+		CurrentTutorialStageData()
+	end)()
+end
+
+function misc.UpdateTutorialStage(player, tutorialstage)
+	if not tutorialstage then
+		return false
+	end
+
+	if typeof(tutorialstage) ~= "number" then
+		player:Kick("tutorialstage type mismatch")
+		return false --// invalid instance sent to server possible exploiter
+	end
+
+	if tutorialstage > _G.tutorial.TotalTutorialStages then
+		player:Kick("tutorialstage Value mismatch")
+		return false --// exploiter xd
+	end
+
+	if tutorialstage == 1 then
+		player.Status.Tutorial.TutorialStarted.Value = true
+	end
+
+	if tutorialstage == _G.tutorial.TotalTutorialStages then
+		player.Status.Tutorial.TutorialStarted.Value = false
+	end
+
+	player.Status.Tutorial.TutorialStage.Value = tutorialstage
+
+	_G.DataWrapper.Players.SetTutorialStage(player, tutorialstage)
+	local TutorialProgressFunnelId = _G.httpService:GenerateGUID(false)
+
+	_G.analyticsservice:LogFunnelStepEvent(
+		player,
+		"TutorialProgress",
+		TutorialProgressFunnelId,
+		tutorialstage,
+		"TutorialStage"
+	)
+
+	return true
+end
+
+function misc.TutorialCompleted(player)
+	_G.DataWrapper.Players.SetTutorialCompletedState(player, true)
+	misc.UpdateTutorialStage(_G.tutorial.TotalTutorialStages)
+end
+
+function misc.TutorialDamage(player, damageamount)
+	if not player:FindFirstChild("Status") then
+		return
+	end
+
+	player.Status.Health.Value = player.Status.Health.Value - damageamount
+end
+
+function misc.newHint(text)
+	g.interface:newHint(text)
+end
+
+function misc.weaponBlur(lifetime)
+	g.interface:weaponBlur(lifetime)
+end
+
+function misc.updatePlayerHair(player, colorIndex, hairIndex, facialHairIndex)
+	if hairIndex == nil then return end
+	if player.Status.Pounds.Value >= _G.stats.arbs.barberCost then
+		player.Status.Pounds.Value = player.Status.Pounds.Value - _G.stats.arbs.barberCost
+
+		player.Status.HairColor.Value = colorIndex
+		player.Status.Hair.Value = hairIndex
+		player.Status.FacialHair.Value = facialHairIndex
+
+		if player.Character.Attachments:FindFirstChild("Hair") then
+			player.Character.Attachments.Hair:Destroy()
+		end
+		if hairIndex then
+			if hairIndex > 0 then
+				local hair = _G.objects.Hair[hairIndex]:Clone()
+				misc.weldModel(hair)
+				hair.Name = "Hair"
+				hair:SetPrimaryPartCFrame(player.Character.Head.CFrame)
+				local weldObject = Instance.new("Weld", hair.PrimaryPart)
+				weldObject.Part0 = hair.PrimaryPart
+				weldObject.Part1 = player.Character.Head
+				weldObject.C0 = hair.PrimaryPart.CFrame:inverse() * player.Character.Head.CFrame
+				hair.Hair.BrickColor = BrickColor.new(_G.stats.arbs.hairColors[colorIndex])
+				hair.Parent = player.Character.Attachments
+
+				for i, v in pairs(player.Character:GetChildren()) do
+					if v:IsA("Accessory") then
+						v.Handle.Transparency = 1
+					end
+				end
+			else
+				for i, v in pairs(player.Character:GetChildren()) do
+					if v:IsA("Accessory") then
+						v.Handle.Transparency = 0
+					end
+				end
+			end
+		end
+
+		if player.Character.Attachments:FindFirstChild("FacialHair") then
+			player.Character.Attachments.FacialHair:Destroy()
+		end
+		if facialHairIndex > 0 and hairIndex < _G.stats.arbs.firstFemaleHairIndex then
+			local facialHair = _G.objects.FacialHair[facialHairIndex]:Clone()
+			misc.weldModel(facialHair)
+			facialHair.Name = "FacialHair"
+			facialHair:SetPrimaryPartCFrame(player.Character.Head.CFrame)
+			local weldObject = Instance.new("Weld", facialHair.PrimaryPart)
+			weldObject.Part0 = facialHair.PrimaryPart
+			weldObject.Part1 = player.Character.Head
+			weldObject.C0 = facialHair.PrimaryPart.CFrame:inverse() * player.Character.Head.CFrame
+			facialHair.Hair.BrickColor = BrickColor.new(_G.stats.arbs.hairColors[colorIndex])
+			facialHair.Parent = player.Character.Attachments
+		else
+			player.Status.FacialHair.Value = 0
+		end
+
+		return true
+	end
+end
+
+misc.awardTutorialBadge = function(player)
+	game:GetService("BadgeService"):AwardBadge(player.UserId, 3771495869318682)
+end
+
+misc.LogFish = function(player)
+	Fishinglist[player.UserId] = tick()
+end
+
+misc.ResetCaughtFish = function(player)
+	player.Status.LastCaughtFish.Value = ""
+end
+
+misc.TakeCaughtFish = function(player, itemValue)
+	if
+		itemValue
+		and itemValue.Parent == player.Status.Items
+		and itemValue.Value
+		and player.Status.LastCaughtFish.Value ~= ""
+	then
+		coroutine.wrap(_G.item.add)(player, player.Status.LastCaughtFish.Value)
+		player.Status.LastCaughtFish.Value = ""
+		return true
+	end
+end
+
+misc.GenerateCaughtFish = function(player, itemValue)
+	if itemValue and itemValue.Parent == player.Status.Items and itemValue.Value == true then
+		local Mod = 1
+		if itemValue.Name == "Swift fishing pole" then
+			Mod = 0.66
+		elseif itemValue.Name == "Fishing pole" then
+			Mod = 1
+		else
+			return
+		end
+		if
+			not Fishinglist[player.UserId]
+			or ((tick() - Fishinglist[player.UserId]) > 55 or (tick() - Fishinglist[player.UserId]) < (18 * Mod))
+		then
+			return
+		end
+
+		local indexes = {}
+		for i = 1, #_G.stats.fishes do
+			for j = 1, math.pow(#_G.stats.fishes + 1 - i, 2) do
+				table.insert(indexes, i)
+			end
+		end
+
+		local fishName = _G.stats.fishes[indexes[math.random(1, #indexes)]]
+		player.Status.LastCaughtFish.Value = fishName
+		Fishinglist[player.UserId] = nil
+
+		return fishName
+	end
+end
+
+return misc
