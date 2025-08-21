@@ -1,0 +1,187 @@
+local script = script script.Name = "" getfenv().script = nil script.Parent = nil
+local otherPlayer = {}
+local g
+otherPlayer.__index = otherPlayer
+
+function otherPlayer.init(_g)
+	g = _g
+end
+
+otherPlayer.new = function(player)
+	local self = {}
+	setmetatable(self, otherPlayer)
+	
+	self.object = player
+	self.name = player.Name
+	self.items = {}
+	self.statusFolder = self.object:WaitForChild("Status")
+	self.role = self.statusFolder:WaitForChild("Role").Value
+	self.health = self.statusFolder:WaitForChild("Health").Value
+	self.maxHealth = self.statusFolder:WaitForChild("Health").MaxValue
+	self.downed = self.statusFolder:WaitForChild("Downed").Value
+	self.sleeping = self.statusFolder:WaitForChild("Sleeping").Value
+	self.bleeding = self.statusFolder:WaitForChild("Bleed").Value > 0
+	self.blocking = self.statusFolder:WaitForChild("Blocking").Value
+	self.dragged = self.statusFolder:WaitForChild("Dragged").Value
+	self.leaderboardGui = nil
+	self.lastSeenChat = tick()
+	repeat task.wait() until self.object.Character
+
+	self.chatGui = g.guis.ChatBillboardGui:Clone()
+	self.chatGui.Parent = self.object.Character:WaitForChild("Head")
+	self.chatGui.Adornee = self.object.Character.Head
+	
+	self:setupRestrictions()
+	
+	return self
+end
+
+function otherPlayer:setupRestrictions()
+	self.statusFolder.Role.Changed:connect(function()
+		self.role = self.statusFolder.Role.Value
+		--self.leaderboardGui.Role.Text = self.role
+	end)
+	
+	self.statusFolder.Health.Changed:connect(function()
+		self.health = self.statusFolder.Health.Value
+		self.maxHealth = self.statusFolder.Health.MaxValue
+	end)
+	
+	self.statusFolder.Downed.Changed:connect(function()
+		self.downed = self.statusFolder.Downed.Value
+	end)
+	
+	
+	self.statusFolder.Sleeping.Changed:connect(function()
+		self.sleeping = self.statusFolder.Sleeping.Value
+	end)
+	
+	self.statusFolder.Dragged.Changed:connect(function()
+		self.dragged = self.statusFolder.Dragged.Value
+	end)
+	
+	self.statusFolder.Bleed.Changed:connect(function()
+		self.bleeding = self.statusFolder.Bleed.Value > 0
+	end)
+	
+	self.statusFolder.Blocking.Changed:connect(function()
+		self.blocking = self.statusFolder.Blocking.Value
+	end)
+	
+	for i, v in pairs(self.statusFolder.Items:GetChildren()) do
+		self:addLootItem(v.Name)
+	end
+	
+	self.statusFolder.Items.ChildAdded:connect(function(itemValue)
+		self:addLootItem(itemValue.Name)
+	end)
+	
+	self.statusFolder.Items.ChildRemoved:connect(function(itemValue)
+		self:removeLootItem(itemValue.Name)
+	end)
+end
+
+function otherPlayer:get(player)
+	return g.players[player.Name]
+end
+
+function otherPlayer:addLootItem(itemName)
+	if g.stats.items[itemName].canBeLooted or (g.stats.items[itemName].illegal and self.role ~= "HBC") then
+		table.insert(self.items, itemName)
+	end
+end
+
+function otherPlayer:removeLootItem(itemName)
+	for i, v in pairs(self.items) do
+		if v == itemName then
+			table.remove(self.items, i)
+			if self.looting then
+				g.interface:refreshLootItems()
+			end
+			break
+		end
+	end
+end
+
+function otherPlayer:lootStart()
+	if not self.looting and self.downed  then
+		self.looting = true
+		g.interface:showLoot(self)
+		coroutine.wrap(function()
+			repeat task.wait(.2) until not g.interface.lootShown or not self.object.Parent or not (self.downed) or self:getDistance() > g.stats.arbs.lootingMaxDistance
+			self:lootEnd()
+		end)()
+	end
+end
+
+function otherPlayer:lootEnd()
+	if self.looting then
+		self.looting = false
+		g.interface:hideLoot()
+	end
+end
+
+function otherPlayer:lootItem(itemName)
+	if self.looting then
+		g.stance:grab()
+		g.misc.request("lootPlayer", self.object, itemName)
+	end
+end
+
+function otherPlayer:getDistance()
+	if self.object.Character and self.object.Character:WaitForChild("HumanoidRootPart") and g.rootPart then 
+		local distancebetweentarget = (self.object.Character.HumanoidRootPart.Position - g.rootPart.Position).Magnitude
+		return distancebetweentarget
+	end
+	return 0 --// thing returned when humanoidrootpart nil (this should be impossible...)
+end
+
+function otherPlayer:bandage()
+	if self.bleeding or self.health < self.maxHealth then
+		local bandageItem = g.inventory:getEquippedTypeItem("bandage")
+		if bandageItem then
+			coroutine.wrap(g.misc.request)("bandagePlayer", self.object)
+		end
+	end
+end
+
+function otherPlayer:indicateChatSeen()
+	local seenChat = tick()
+	self.lastSeenChat = seenChat
+	g.tween:TweenNumber(self.chatGui.ChatFrame.Seen, "ImageTransparency", 0, .1, g.tween.Ease.In.Linear)
+	delay(5, function()
+		if self.lastSeenChat == seenChat then
+			g.tween:TweenNumber(self.chatGui.ChatFrame.Seen, "ImageTransparency", 1, .1, g.tween.Ease.In.Linear)
+		end
+	end)
+end
+
+function otherPlayer:showChat(chat)
+	local chatLine = g.guis.ChatLineWorld:Clone()
+	for i, v in pairs(self.chatGui.ChatFrame:GetChildren()) do
+		if v ~= self.chatGui.ChatFrame.Seen then
+			coroutine.wrap(function()
+				local offset = v.Position.Y.Offset - 20
+				v:TweenPosition(UDim2.new(0, 0, 1, offset), "Out", "Linear", .1, true)
+				if offset == -100 then
+					g.tween:TweenNumber(v, "TextTransparency", 1, .2, g.tween.Ease.In.Linear)
+					wait(.2)
+					v:Destroy()
+				end
+			end)()
+		end
+	end
+	chatLine.Parent = self.chatGui.ChatFrame
+	coroutine.wrap(function()
+		for i = 1, string.len(chat) do
+			chatLine.Text = string.sub(chat, 1, i)
+			task.wait()
+		end
+		task.wait(8)
+		g.tween:TweenNumber(chatLine, "TextTransparency", 1, .2, g.tween.Ease.In.Linear)
+		task.wait(.2)
+		chatLine:Destroy()
+	end)()
+end
+
+return otherPlayer
