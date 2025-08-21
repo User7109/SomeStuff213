@@ -1,0 +1,275 @@
+local firing = {}
+local g
+firing.__index = firing
+
+function firing.init(_g)
+	g = _g
+	local self = {}
+	setmetatable(self, firing)
+	return self
+end
+
+
+
+
+function firing:fire(item)
+	local ammoLoaded = item.content.ammoLoaded
+	local hits = {}
+
+	for i = 1, ammoLoaded or 1 do
+
+
+		if ammoLoaded then
+			item.content.ammoLoaded = item.content.ammoLoaded - 1
+			if item.content.ammoLoaded < 0 then
+				item.content.ammoLoaded = 0	
+			end
+
+		end
+
+		local player, hitPosition, hitObject
+
+
+		if item.stats.weapon.projectile then
+
+			player, hitPosition, hitObject = self:ray(item)
+
+
+			table.insert(hits, g.mouse.Hit.p)
+			table.insert(hits, item.content.chargeForce)
+			player = self:animateProjectile(item.model,hitPosition,item.content.chargeForce)
+		else
+			player, hitPosition, hitObject = self:ray(item)
+			self:animate(item.model, hitPosition, hitObject ~= nil)
+			table.insert(hits, hitPosition)
+			table.insert(hits, hitObject or false)
+		end
+		if player then
+			if not workspace:FindFirstChild("ProjectileHit") then
+				
+				local newprojectilehitsound = g.sounds:FindFirstChild("ProjectileHit"):Clone()
+				newprojectilehitsound.Parent = workspace
+				newprojectilehitsound:Play() 
+				
+				newprojectilehitsound.Ended:Connect(function()
+					task.wait()
+					newprojectilehitsound:Remove()
+				end)
+			end
+			
+			
+		end
+		
+		local headshot = false
+		
+		if hitObject then
+			if hitObject.Name == "Head" then
+				headshot = true
+			end
+
+			if hitObject:FindFirstChild("BodyPart") and hitObject:FindFirstChild("BodyPart").Value == "Head" then
+				headshot = true
+			end
+		end
+		
+		g.misc.damageEntity(player, item, false, "9q)!W.jtW2(02QMqj3o]v[ao]tw)hV2f8IXqMJeLV~1y+-Cvx3cfy55fb~DQ0+QKT1e_3u]mWk66S_UnIsRjRgmm4BF3oFJ[Aqe21G!(JgtY)C", headshot)
+		if not item.stats.weapon.scattershot then
+			break
+		end
+	end
+	g.misc.request("animatePlayerFire", item.model, unpack(hits))
+end
+
+
+
+function firing:ray(item)
+	
+	if not g.character then
+		return
+	end
+	
+	local origin = g.character.Head.Position
+	local target = g.mouse.Hit.p
+	local distance = (origin - target).Magnitude
+	local minSpread = -(item.stats.weapon.spread or 0) * distance 
+	local maxSpread =  (item.stats.weapon.spread or 0) * distance
+	
+	local spread = (math.random(minSpread, maxSpread) / 100)
+	
+	if g.player.Status.Role.Value == "Native" and item.stats.weaponType == "musket" and item.stats.description ~= "Blunderbuss" then
+		
+		local random = math.random(1,2)
+		
+		if random == 1 then
+			spread = 5
+		else
+			spread = -5
+		end
+	end
+	
+	if self.crouched then
+		spread /= 2
+	end
+	
+	
+	
+	target = Vector3.new(target.X + (math.random(minSpread, maxSpread) / 100), target.Y + spread, target.Z + (math.random(minSpread, maxSpread) / 100))
+	local ray = Ray.new(origin, (target - origin).unit * (item.stats.weapon.maxRange or g.stats.arbs.fireMaximumDistance))
+	local hitObject, hitPosition = workspace:FindPartOnRayWithIgnoreList(ray, { g.mouseFilter, g.character })
+	return g.misc.getPlayerFromPart(hitObject) or g.interaction:getOperable(hitObject), hitPosition, hitObject
+end
+
+function firing:animate(itemModel, hitPosition, animateImpact)
+	
+	if not g.objects then return end
+	
+	local bulletObject = g.objects.Bullet:Clone()
+	bulletObject.Parent = g.mouseFilter
+	bulletObject.Whizz:Play()
+	local lastFire = tick()
+	local distance = (itemModel.Barrel.Position - hitPosition).Magnitude
+	local direction = CFrame.new(itemModel.Barrel.Position, hitPosition)
+	local barrelPosition = itemModel.Barrel.Position
+	direction = direction - direction.p
+	spawn(function()
+		while g.runService.RenderStepped do
+			task.wait()
+			local i = (tick() - lastFire) / (g.stats.arbs.bulletLifeTime + (distance / 900))
+			if i > 1 then
+				bulletObject:Destroy()
+				if animateImpact then
+					local bulletImpactObject = g.objects.BulletImpact:Clone()
+					bulletImpactObject.CFrame = CFrame.new(hitPosition)
+					bulletImpactObject.Parent = g.mouseFilter
+					bulletImpactObject.Impact:Play()
+					delay(.2, function()
+						bulletImpactObject.Smoke.Enabled = false
+						task.wait(1.5)
+						bulletImpactObject:Destroy()
+					end)
+				end
+				break
+			end
+			local position = barrelPosition:lerp(hitPosition, i)
+			local distance1 = (position - barrelPosition).Magnitude
+			local distance2 = (hitPosition - position).Magnitude
+			local distance3 = distance1 < g.stats.arbs.bulletLength and distance1 or g.stats.arbs.bulletLength
+			local distance4 = distance2 < g.stats.arbs.bulletLength and distance2 or g.stats.arbs.bulletLength
+			local bulletLength = (distance3 < distance4 and distance3) or (distance4 < distance3 and distance4) or g.stats.arbs.bulletLength
+			bulletObject.Mesh.Scale = Vector3.new(bulletObject.Mesh.Scale.X, bulletObject.Mesh.Scale.Y, bulletLength)
+			bulletObject.CFrame = direction + position
+		end
+	end)
+end
+
+function firing:animateProjectile(itemModel, hitPosition, chargeForce)
+	if not itemModel or not hitPosition or not chargeForce then return end
+	local itemStats = g.stats.items[itemModel.Name]
+	local lastPosition
+	local tipPosition = itemModel.Tip.Position
+	local direction = CFrame.new(tipPosition, hitPosition).lookVector * 200 * chargeForce
+	local startTime = tick()
+	local projectileName
+	local fishingPole = itemModel.Name == "Swift fishing pole" or itemModel.Name == "Fishing pole"
+	if fishingPole then
+		projectileName = "Floater"
+		itemModel.Handle.ReelOut:Play()
+	else
+		projectileName = itemStats.weapon.ammoType
+	end
+	local projectileObject = g.objects.Projectiles[projectileName]:Clone()
+	projectileObject.Parent = g.mouseFilter
+
+	while true do
+		if (tick() - startTime) >= 5 then
+			projectileObject:Destroy()
+		end
+
+		local newPosition = tipPosition + self:lerpProjectile(direction, (tick() - startTime) * 2, -15)
+
+		if lastPosition then
+			local hitObject, hitPosition;
+			if fishingPole then
+				local MouseFilter = g.mouseFilter:GetChildren()
+				
+				for i, item in pairs(MouseFilter) do
+					if item.Name == "Water" then
+						MouseFilter[i] = nil
+						break
+					end
+				end
+				
+				table.insert(MouseFilter, itemModel.Parent.Parent)
+				print(MouseFilter)
+
+				hitObject, hitPosition = self:rayProjectile(lastPosition, newPosition, MouseFilter)
+			else
+				hitObject, hitPosition = self:rayProjectile(lastPosition, newPosition, { g.mouseFilter, itemModel.Parent.Parent })
+			end
+			if hitObject then
+
+				local materialIsWater = false
+
+				if hitObject.Name == "Terrain" then
+					local regionSize = Vector3.new(4,4,4)
+					local region = Region3.new(hitPosition - regionSize/2, hitPosition + regionSize/2)
+					region = region:ExpandToGrid(4)
+
+					local mat,occ = workspace.Terrain:ReadVoxels(region, 4)
+
+					local x,y,z = 1,1,1
+					local matAtHit = mat[x][y][z]
+
+					if matAtHit == Enum.Material.Water then
+						materialIsWater = true
+					end
+				end
+
+				projectileObject.CFrame = CFrame.new(hitPosition, projectileObject.Position) * CFrame.Angles(math.rad(180), 0, 0)
+				if fishingPole then
+					itemModel.Handle.ReelOut:Stop()
+					if materialIsWater then
+						projectileObject.Impact:Play()
+						itemModel.Tip.RopeConstraint.Length = (tipPosition - newPosition).magnitude - 4
+						itemModel.Tip.RopeConstraint.Attachment1 = projectileObject.Attachment
+						return projectileObject
+					else
+						projectileObject:Destroy()
+						return
+					end
+				end
+				projectileObject.Impact:Play()
+				if hitObject.Anchored then
+					task.delay(15, function()
+						g.tweenService:Create(projectileObject, TweenInfo.new(5), { Transparency = 1 }):Play()
+						game:GetService("Debris"):AddItem(projectileObject, 5)
+					end)
+				else
+					projectileObject.Transparency = 1
+					game:GetService("Debris"):AddItem(projectileObject, 1)
+				end
+				return g.misc.getPlayerFromPart(hitObject) or g.interaction:getOperable(hitObject)
+			end
+		end
+		lastPosition = newPosition
+		projectileObject.CFrame = CFrame.new(newPosition, projectileObject.Position) * CFrame.Angles(math.rad(180), 0, 0)
+
+		g.runService.RenderStepped:wait()
+	end
+end
+
+function firing:lerpProjectile(initialVelocity, time, gravity)
+	local displacement = {}
+	displacement.x = initialVelocity.x * time
+	displacement.y = (initialVelocity.y * time) + (gravity * (time^2))/2
+	displacement.z = initialVelocity.z * time
+	return Vector3.new(displacement.x, displacement.y, displacement.z)
+end
+
+function firing:rayProjectile(origin, target, filter)
+	local ray = Ray.new(origin, (target - origin).unit * (origin - target).Magnitude)
+	local hitObject, hitPosition = workspace:FindPartOnRayWithIgnoreList(ray, filter)
+	return hitObject, hitPosition
+end
+
+return firing
