@@ -1,0 +1,142 @@
+--!strict
+
+
+
+local ZonesListPlayerList: {[string]: {[Player]: boolean}} = {}
+
+local RealZones = {}
+
+local on = {}
+
+local onCooldown = {}
+
+local SZtimer = 10
+
+for index, zone in ipairs(workspace.TNF.World.MouseFilter.Zones:GetChildren()) do
+	ZonesListPlayerList[zone.Name] = {}
+	RealZones[zone.Name] = zone
+end
+
+local function cd(p)
+	task.wait(5)
+	onCooldown[p] = false
+end
+
+local function CheckIfInZone(player: Player, zone: BasePart): boolean
+	if not player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		return false
+	end
+
+	local isIn = true
+	local humanoidRootPart = player.Character.HumanoidRootPart
+
+
+	if humanoidRootPart.Position.X < zone.Position.X - zone.Size.X / 2 - 5 or humanoidRootPart.Position.X > zone.Position.X + zone.Size.X / 2 + 5 then
+
+		isIn = false
+	end
+
+	if humanoidRootPart.Position.Y < zone.Position.Y - zone.Size.Y / 2 - 5 or humanoidRootPart.Position.Y > zone.Position.Y + zone.Size.Y / 2 + 5 then
+		isIn = false
+	end
+
+	if humanoidRootPart.Position.Z < zone.Position.Z - zone.Size.Z / 2 - 5 or humanoidRootPart.Position.Z > zone.Position.Z + zone.Size.Z / 2 + 5 then
+		isIn = false
+	end
+
+	return isIn
+end
+
+local function OnZoneEntered(player: Player, zoneName: string)
+	if not RealZones[zoneName] then
+		return
+	end
+	
+	if onCooldown[player] then
+		return
+	end
+
+	if not ZonesListPlayerList[zoneName] then
+		return
+	end
+
+	if not player.Status.Zones[zoneName] then
+		return
+	end
+
+	if not CheckIfInZone(player, RealZones[zoneName]) then
+		return
+	end
+
+	ZonesListPlayerList[zoneName][player] = true
+	player.Status.Zones[zoneName].Value = true
+	if not on[player] then
+		on[player] = {}
+		on[player].ui = player.Character.Head.LabelBillboardGui.SZ
+		on[player].count = 0
+		on[player].antiDamage = true
+	else
+		on[player].count += 1
+	end
+	on[player].ui.ImageColor3 = Color3.fromRGB(150, 150, 150)
+	on[player].ui.Visible = true
+end
+
+local function OnZoneLeft(player : Player, zoneName: string)
+	
+	if not RealZones[zoneName] then
+		return
+	end
+
+	if not ZonesListPlayerList[zoneName] then
+		return
+	end
+
+	if not player.Status.Zones[zoneName] then
+		return
+	end
+
+	if not ZonesListPlayerList[zoneName][player] then
+		return
+	end
+	
+	onCooldown[player] = true
+	
+	task.spawn(function()
+		cd(player)
+	end)
+	
+	task.spawn(function()
+		local number = on[player].count
+		on[player].ui.ImageColor3 = Color3.fromRGB(255, 255, 0)
+		player.Status.Zones[zoneName].Value = false
+		task.wait(SZtimer)
+		if on[player].count == number then
+			on[player].ui.Visible = false
+			ZonesListPlayerList[zoneName][player] = nil
+			on[player].antiDamage = false
+		end
+	end)
+end
+
+
+task.spawn(function()
+	while true do
+		task.wait(.5)
+
+		for zoneName, zoneList in pairs(ZonesListPlayerList) do
+			for player, _ in pairs(zoneList) do
+				pcall(function()
+					if not CheckIfInZone(player, RealZones[zoneName]) then
+						OnZoneLeft(player, zoneName)
+					end
+				end)
+			end
+		end
+	end
+end)
+
+return {
+	OnZoneEntered = OnZoneEntered,
+	OnZoneLeft = OnZoneLeft,
+}
