@@ -1,0 +1,117 @@
+local script = script
+script.Name = ""
+getfenv().script = nil
+script.Parent = nil
+local input = {}
+local g
+input.__index = input
+
+function input.init(_g)
+	g = _g
+	local self = {}
+	setmetatable(self, input)
+	return self
+end
+
+function input:start()
+	g.inputService.InputBegan:connect(function(inputObject)
+		if inputObject.UserInputType == Enum.UserInputType.Keyboard then
+			self:keyboardPressed(inputObject)
+		elseif inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
+			self:mousebutton1Pressed()
+		elseif inputObject.UserInputType == Enum.UserInputType.MouseButton2 then
+			self:mousebutton2Pressed()
+		end
+	end)
+	g.inputService.InputEnded:connect(function(inputObject)
+		if inputObject.UserInputType == Enum.UserInputType.Keyboard then
+			self:keyboardReleased(inputObject)
+		elseif inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
+			self:mousebutton1Released()
+		elseif inputObject.UserInputType == Enum.UserInputType.MouseButton2 then
+			self:mousebutton2Released()
+		end
+	end)
+	g.mouse.Move:connect(function()
+		self:moveMouse()
+	end)
+end
+
+function input:keyboardPressed(inputObject)
+	local key = string.lower(inputObject.KeyCode.Name)
+	if not g.inputService:GetFocusedTextBox() then
+		g.inventory:action(key)
+		if key == g.stats.controls.inventory then
+			g.interface:toggleInventory()
+			g.interface:hideLoot()
+		end
+		if key == g.stats.controls.crafting then
+			g.interface:toggleCrafting()
+		end
+		if key == g.stats.controls.interact then
+			g.interaction:_start()
+		end
+		if key == g.stats.controls.respawn then
+			g.stance:requestRespawn()
+		end
+		if key == g.stats.controls.chat then
+			g.interface:startChat()
+		end
+		if key == g.stats.controls.whisper then
+			g.interface:toggleWhisper()
+		end
+		if key == g.stats.controls.stand then
+			g.stance:standH()
+		end
+		if key == g.stats.controls.dropCart then
+			g.stance:dropCart()
+		end
+		if key == g.stats.controls.titles then
+			g.interface:toggleTitles()
+		end
+		if key == g.stats.controls.stream then
+			g.interface:toggleStream()
+        end
+        if key == g.stats.controls.Settings then
+            g.interface:toggleSettings()
+        end
+	end
+end
+
+function input:mousebutton1Pressed()
+	g.inventory:action("leftClickDown")
+	g.interaction:dragItemStart()
+	g.interface:dragItemStart()
+end
+
+function input:mousebutton2Pressed()
+	g.stance:zoomIn()
+	g.inventory:action("rightClickDown")
+	g.interface:useItem()
+end
+
+function input:keyboardReleased(inputObject)
+	local key = string.lower(inputObject.KeyCode.Name)
+	if not g.inputService:GetFocusedTextBox() then
+		if key == g.stats.controls.interact then
+			g.interaction:stop()
+		end
+	end
+end
+
+function input:mousebutton1Released()
+	g.inventory:action("leftClickUp")
+	g.interaction:dragItemEnd()
+	g.interface:dragItemEnd()
+end
+
+function input:mousebutton2Released()
+	g.stance:zoomOut()
+	g.inventory:action("rightClickUp")
+end
+
+function input:moveMouse()
+	g.interface:moveCursor()
+end
+
+return input
