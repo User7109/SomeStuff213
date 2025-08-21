@@ -1,0 +1,15 @@
+-- Iron Dome Used For Anti-Fling & Anti-Exploit
+
+local TheDome = workspace:WaitForChild("AntiFling")
+local handler = require(script.IronHandler)
+
+for i,v in TheDome:GetChildren() do
+	if v:IsA("Part") then
+		if v.Name == "Part" then
+			local p = handler.newCatch(v)
+			task.spawn(function()
+				p:Handle()
+			end)
+		end
+	end
+end
