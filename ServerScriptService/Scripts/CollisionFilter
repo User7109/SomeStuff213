@@ -1,0 +1,50 @@
+local PhysService = game:GetService("PhysicsService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local playersGroup = PhysService:RegisterCollisionGroup("players")
+local itemsGroup = PhysService:RegisterCollisionGroup("items")
+
+PhysService:CollisionGroupSetCollidable("players", "players", false)
+PhysService:CollisionGroupSetCollidable("players", "items", false)
+
+
+local function SetCollisionGroup(model, groupName)
+	for i,v in pairs(model:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.CollisionGroup = groupName
+		end
+	end
+end
+
+local function HandleCharacter(character)
+	if character then
+		SetCollisionGroup(character, "players")
+	end
+end
+
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function(newchar)
+		task.wait()
+		HandleCharacter(newchar)
+	end)
+end)
+
+for _, player in pairs(Players:GetPlayers()) do
+	if player.Character then
+		HandleCharacter(player.Character)
+	end
+end
+
+local objectsFolderReplicatedStorage = ReplicatedStorage:WaitForChild("TNF"):WaitForChild("Resources"):WaitForChild("Objects")
+local itemsFolder = objectsFolderReplicatedStorage:WaitForChild("Items")
+
+task.spawn(function()
+	for _, item in pairs(itemsFolder:GetChildren()) do
+		if item:IsA("Model") or item:IsA("Folder") then
+			SetCollisionGroup(item, "items")
+		end
+	end
+	SetCollisionGroup(objectsFolderReplicatedStorage.DeployableItemModel, "items")
+end)
+
