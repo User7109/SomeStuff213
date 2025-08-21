@@ -1,0 +1,122 @@
+--------------------------------------------------------------------
+--[[  ORIGINAL  Setup.lua  (pre‑refactor)  --------------------------
+
+Role:
+    Single “bootstrap” ModuleScript that:
+      1) Builds **global table `g`** shared by every client module.
+      2) Fills `g` with :
+            • Roblox services  (g.playersService, g.debris, …)
+            • Game resources   (g.resources, g.remotes, g.guis, …)
+            • Dynamically‑required feature modules
+      3) Creates runtime references for the local player, camera,
+         world folders, zones, etc.
+      4) Calls each feature module’s  `init(g)`  (if it exists).
+      5) Starts game‑systems in a hard‑coded order via `g[module]:start()`.
+
+Sequence (simplified):
+    local g = {}
+    -- ① services -> g.xxx
+    -- ② resources -> g.resources.xxx
+    -- ③ require each child of Resources/Modules
+        g[moduleNameLower] = require(v)   -- exposes module globally
+        if module.init then module.init(g) end
+    -- ④ player / world references (g.player, g.world, g.map…)
+    -- ⑤ ordered start list  {"misc","input",...}
+        g[v]:start()
+
+Characteristics:
+    • **Global‑state heavy** – all subsystems read/write `g`.
+    • Runs once per client in ReplicatedFirst/Loader/Main.
+    • At the very end, sets `g = nil` locally to prevent accidental reuse,
+      but individual modules have already captured their slice of `g`.
+
+Limitations:
+    – Tight coupling & implicit dependencies.
+    – Impossible to unit‑test modules in isolation without recreating `g`.
+--------------------------------------------------------------------]]
+
+
+local script = script
+script.Name = ""
+getfenv().script = nil
+script.Parent = nil
+
+return function()
+	local g = {}
+	g.replicatedStorage = game:GetService("ReplicatedStorage")
+	g.debris = game:GetService("Debris")
+	g.lighting = game:GetService("Lighting")
+	g.soundService = game:GetService("SoundService")
+	g.groupService = game:GetService("GroupService")
+	g.starterGui = game:GetService("StarterGui")
+	g.guiservice = game:GetService("GuiService")
+	g.playersService = game:GetService("Players")
+	g.physicsService = game:GetService("PhysicsService")
+	g.contentProvider = game:GetService("ContentProvider")
+	g.runService = game:GetService("RunService")
+	g.chatService = game:GetService("Chat")
+	g.inputService = game:GetService("UserInputService")
+	g.tweenService = game:GetService("TweenService")
+	g.marketplaceService = game:GetService("MarketplaceService")
+	g.teleportService = game:GetService("TeleportService")
+	g.resources = g.replicatedStorage.TNF.Resources
+	g.remotes = g.resources.Remotes
+	g.guis = g.resources.Guis
+	g.storage = g.resources.Storage
+	g.sounds = g.resources.Sounds
+	g.objects = g.resources.Objects
+	local modules = g.resources.Modules
+	for i, v in pairs(modules:GetChildren()) do
+		if v ~= script then
+			local index = string.lower(string.sub(v.Name, 1, 1)) .. string.sub(v.Name, 2)
+			local module = require(v)
+			g[index] = module
+			if type(module.init) == "function" then
+				module.init(g)
+			end
+		end
+	end
+
+	g.camera = workspace.CurrentCamera
+	g.player = game.Players.LocalPlayer
+	g.players = {}
+	g.operables = {}
+	g.zones = {}
+	g.loadedZones = {}
+
+	repeat
+		task.wait()
+		g.character = g.player.Character
+	until g.character and g.player:FindFirstChild("Status")
+
+	g.humanoid = g.character:WaitForChild("Humanoid")
+	g.rootPart = g.character.HumanoidRootPart
+	g.mouse = g.player:GetMouse()
+	g.world = workspace.TNF.World
+	g.characters = g.world.Characters
+	g.map = g.world.Map
+	g.items = g.world.Items
+	g.operablesF = g.world.Operables
+	g.mouseFilter = g.world.MouseFilter
+	g.spawns = g.mouseFilter.Spawns
+	g.zonesF = g.mouseFilter.Zones
+	g.playerMouseFilter = g.mouseFilter:WaitForChild(g.player.Name)
+	g.mouse.TargetFilter = g.mouseFilter
+	local order = {
+		"misc",
+		"input",
+		"role",
+		"interface",
+		"stance",
+		"integrity",
+		"inventory",
+		"interaction",
+		"economy",
+		"tutorial",
+	}
+	for i, v in pairs(order) do
+		--print(v)
+		g[v]:start()
+	end
+	g = nil
+end
