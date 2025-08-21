@@ -1,0 +1,21 @@
+local seatFolder = workspace:WaitForChild("TNF").World.StatSeats
+local loadingSeat = seatFolder.Health:WaitForChild("Seat")
+local load2 = seatFolder.Hunger:WaitForChild("Seat")
+local handler = require(script.SeatStatHandler)
+
+local statseatFolders = {
+	"Health",
+	"Hunger",
+}
+
+for i,v in seatFolder:GetDescendants() do
+	if table.find(statseatFolders,v.Parent.Name) and v:IsA("Seat") then
+		task.spawn(function()
+			handler.activate(v,v.Parent.Name)
+		end)
+	end
+end
+
+for i,v in seatFolder.Stocks:GetChildren() do
+	require(script.StockHandler).activate(v)
+end
