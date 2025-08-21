@@ -1,0 +1,130 @@
+local script = script script.Name = "" getfenv().script = nil script.Parent = nil
+local economy = {}
+local g
+economy.__index = economy
+
+function economy.init(_g)
+	g = _g
+	local self = {}
+	setmetatable(self, economy)
+	return self
+end
+
+function economy:start()
+	self.stocks = {}
+	self.pounds = g.storage:WaitForChild("Pounds").Value
+	self.stocksFolder = g.storage:WaitForChild("Stocks")
+	self.lastStockUpdate = nil
+	self.transactionInProgress = false
+
+	self:setupStocks()
+end
+
+function economy:setupStocks()
+	delay(1, function()
+		self.stocksFolder.ChildAdded:Connect(function(child)
+			wait(1)
+			self.stocks[child.Name] = child.Value
+			self.lastStockUpdate = tick()
+			g.interface:refreshShopItems()
+			g.interface:refreshStockItems()
+		end)
+
+		for i, v in pairs(self.stocksFolder:GetChildren()) do
+			self.stocks[v.Name] = v.Value
+
+			v.Changed:Connect(function()
+				self.stocks[v.Name] = v.Value
+				self.lastStockUpdate = tick()
+				delay(.5, function()
+					g.interface:refreshShopItems()
+				end)
+				g.interface:refreshStockItems()
+			end)
+		end
+
+		g.storage.Pounds.Changed:Connect(function()
+			local pounds = g.storage.Pounds.Value
+			g.interface:updateStockPounds(pounds, self.pounds)
+			self.pounds = pounds
+			delay(.5, function()
+				g.interface:refreshShopItems()
+			end)
+		end)
+
+		g.interface:updateStockPounds(self.pounds, self.pounds)
+	end)
+end
+
+function economy:purchaseItem(shop, itemName, itemAmount, displayModel)
+	if not self.transactionInProgress then
+		local totalWeight = 0
+		print(g.inventory.backpack)
+		for i,v in ipairs(g.inventory.backpack) do
+			local name = v["name"]
+			local ItemStats = g.stats.items[name]
+			if ItemStats.weight then
+				totalWeight += ItemStats.weight
+			else
+				warn("Weight not found for: ".. v)
+			end
+		end
+		totalWeight += g.stats.items[itemName].weight
+		--warn("CURRENT WEIGHT:",totalWeight)
+		if totalWeight > 525 then
+			g.interface:newHint("Cannot carry any more items")
+		else
+			self.transactionInProgress = true
+			g.interface:disableShopItems()
+			itemAmount = g.misc.request("purchaseItem", shop, itemName, itemAmount, displayModel)
+			self.transactionInProgress = false
+			if itemAmount then
+				if g.stats.items[itemName].value * g.stats.shops[shop].purchaseCoefficient == 0 then
+					g.interface:newHint("You take x" .. itemAmount .. " " .. itemName .. "(s)")
+				else
+					g.interface:newHint("You purchase x" .. itemAmount .. " " .. itemName .. "(s)")
+				end
+			else
+				g.interface:newHint("Transaction failed, you were not charged")
+			end
+			g.interface:refreshShopItems()
+		end
+	end
+end
+
+function economy:purchaseItemTradingPost(tradingPost, itemName)
+	if not self.transactionInProgress then
+		if #g.inventory.backpack > 525 then
+			g.interface:newHint("Cannot carry any more items")
+		else
+			self.transactionInProgress = true
+			local success = g.misc.request("purchaseItemTradingPost", tradingPost.model, itemName)
+			self.transactionInProgress = false
+			if success then
+				if tradingPost.costs[itemName] == 0 or tradingPost.owner == g.player then
+					g.interface:newHint("You take a " .. itemName .. " from " .. tradingPost.owner.Name)
+				else
+					g.interface:newHint("You purchase a " .. itemName .. " from " .. tradingPost.owner.Name)
+				end
+			end
+		end
+	end
+end
+
+function economy:sellItem(shop, item, itemAmount)
+	if not self.transactionInProgress then
+		self.transactionInProgress = true
+		g.interface:disableShopItems()
+		itemAmount = g.misc.request("sellItem", shop, item.name, itemAmount)
+		self.transactionInProgress = false
+		if itemAmount then
+			g.interface:newHint("You sell x" .. itemAmount .. " " .. item.name .. "(s)")
+		else
+			g.interface:newHint("Transaction failed, you were not charged")
+		end
+		g.interface:refreshShopItems()
+	end
+end
+
+
+return economy
