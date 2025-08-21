@@ -1,0 +1,62 @@
+local Reward = {}
+
+
+function Reward.notify(player : Player, reward : string, color : Color3, code : string, amount : NumberValue, isPounds : boolean)
+    local done = false
+	if code == "llOsp98~" then
+        local capnot = player.PlayerGui.MainGui.CaptureNotification
+        capnot.Visible = true
+        local ite = capnot.Item :: TextLabel
+        ite.TextColor3 = color
+        if amount == 1 then
+            ite.Text = reward
+        else
+            capnot.Item.Text = reward.. " x".. tostring(amount)
+        end
+        coroutine.wrap(function()
+            local on = 60
+            local textg = capnot.Timer :: TextLabel
+            textg.Text = on.." Seconds"
+            for i = 1,on do
+                task.wait(1)
+                if not capnot.Visible then
+                    break
+                end
+                on -= 1
+                textg.Text = on.. " Seconds"
+            end
+            if textg.Parent.Visible then
+                done = true
+                textg.Parent.Visible = false
+            end
+        end)()
+        capnot.Close.MouseButton1Click:Connect(function()
+            capnot.Visible = false
+            done = true
+        end)
+        capnot.ClaimButton.MouseButton1Click:Connect(function()
+            if done then return end
+            done = true
+            capnot.Visible = false
+            if not isPounds then
+                if amount == 1 then
+                    local c = script.Freec:Clone()
+                    c.Name = reward
+                    c.Parent = player.Status.Items
+                else
+                    for i = 1,amount do
+                        task.wait()
+                        local c = script.Freec:Clone()
+                        c.Name = reward
+                        c.Parent = player.Status.Items
+                    end
+                end
+            else
+                player.Status.Pounds.Value += amount
+            end
+        end)
+    end
+end
+
+
+return Reward
