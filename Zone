@@ -1,0 +1,129 @@
+local script = script script.Name = "" getfenv().script = nil script.Parent = nil
+local zone = {}
+local g
+zone.__index = zone
+
+function zone.init(_g)
+	g = _g
+end
+
+zone.new = function(object)
+	local self = {}
+	setmetatable(self, zone)
+	
+	self.name = object.Name
+	self.stats = g.stats.zones[self.name]
+	self.value = g.player.Status.Zones[self.name]
+	self.object = object
+	self.map = g.map[self.name]
+	self.operables = g.operablesF[self.name]
+	self.ambience = g.sounds.Zones:FindFirstChild(self.name)
+	self.loaded = false
+
+	
+	if self.ambience then
+		if self.stats.ambienceIsMusic then
+			self.ambience.SoundGroup = g.sounds.MusicSoundGroup
+		else
+			self.ambience.SoundGroup = g.sounds.SoundGroup
+		end
+		self.ambience:Play()
+	end
+	
+	self.value.Changed:Connect(function()
+		if self.value.Value == true then
+			self:load()
+        else
+			self:unload()
+		end
+	end)
+	
+	
+	return self
+end
+
+function zone:load()
+	if not self.loaded then
+		self.loaded = true
+		table.insert(g.loadedZones, self)
+		if self.ambience then
+			g.tweenService:Create(self.ambience, TweenInfo.new(3), { Volume = .4 }):Play()
+		end
+		local hint = string.upper(self.name)
+		
+		
+		if self.stats.safetyIndicatorRoles and g.misc.find(self.stats.safetyIndicatorRoles, g.role.name) then
+			-- and g.player.Status.Quests.QuestTaken.Value == false Quest taken out right after false
+			if g.player.Status.inCombat.Value == false then
+				g.interface:showSafeIndicator()
+			end
+			hint = hint .. " (SAFEZONE)"
+		end
+		if self.stats.interior then
+			g.tweenService:Create(g.sounds.GlobalAmbient, TweenInfo.new(3), { Volume = .1 }):Play()
+		end
+		if self.stats.ambienceIsMusic then
+			for i, v in pairs(g.loadedZones) do
+				if v ~= self and v.stats.ambienceIsMusic then
+					
+					if v == nil  then
+						return
+					end
+					
+					g.tweenService:Create(v.ambience, TweenInfo.new(3), { Volume = 0 }):Play()
+				end
+			end
+		end
+		g.interface:newHint(hint)
+	end
+end
+
+function zone:unload()
+	if self.loaded then
+		self.loaded = false
+		g.misc.remove(g.loadedZones, self)
+		if self.ambience then
+			g.tweenService:Create(self.ambience, TweenInfo.new(3), { Volume = 0 }):Play()
+		end
+		
+		if self.stats.safetyIndicatorRoles and g.misc.find(self.stats.safetyIndicatorRoles, g.role.name) then
+			-- and g.player.Status.Quests.QuestTaken.Value == false quests taken out after false
+			if g.player.Status.inCombat.Value == false then
+				g.interface:hideSafeIndicator()
+			end
+			g.interface:newHint("LEAVING SAFE ZONE")
+			
+			task.spawn(function()
+				for i = 1,10 do
+					if g.player.Character.Head.LabelBillboardGui.SZ.ImageColor3 == Color3.fromRGB(150, 150, 150) then
+						break
+					end
+					g.interface:newHint("Losing protection.. "..11-i)
+					task.wait(1)
+				end
+				if g.player.Character.Head.LabelBillboardGui.SZ.ImageColor3 ~= Color3.fromRGB(150, 150, 150) then
+					g.interface:newHint("Protection Lost")
+				end
+			end)
+			
+			local char = g.player.Character
+			
+			
+		end
+		if self.stats.interior then
+			g.tweenService:Create(g.sounds.GlobalAmbient, TweenInfo.new(3), { Volume = .3 }):Play()
+		end
+		if self.stats.ambienceIsMusic then
+			local ambienceIsMusic = false
+			for i, v in pairs(g.loadedZones) do
+				if v.stats.ambienceIsMusic then
+					g.tweenService:Create(v.ambience, TweenInfo.new(3), { Volume = .3 }):Play()
+					ambienceIsMusic = true
+					break
+				end
+			end
+		end
+	end
+end
+
+return zone
