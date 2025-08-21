@@ -1,0 +1,62 @@
+local script = script script.Name = "" getfenv().script = nil script.Parent = nil
+local role = {}
+local g
+role.__index = role
+
+function role.init(_g)
+	g = _g
+	local self = {}
+	setmetatable(self, role)
+	return self
+end
+
+function role:start()
+	self.availableRoles = {}
+	self.name = nil
+	self.isInMainGroup = g.player:IsInGroup(g.stats.arbs.mainGroupID)
+	-- self.isInSubMainGroup = g.player:IsInGroup(g.stats.arbs.SubmainGroupID)
+	self.NLRPosition = nil
+	self.isInNLR = false
+	self.lastNLRObject = nil
+
+	self:getAvailableRoles()
+end
+
+function role:getAvailableRoles()
+	local isplayerstaff = g.misc.checkIfPlayerisAdmin(g.player)
+	
+	for i, v in pairs(g.stats.roles) do
+		if (v.type == "department" and self.isInMainGroup and g.player:IsInGroup(v.groupID)) or (v.type == "main" and g.player:IsInGroup(g.stats.arbs.mainGroupID) and g.player:GetRankInGroup(g.stats.arbs.mainGroupID) >= v.rankID) or v.type == "default" or isplayerstaff == true  then
+			table.insert(self.availableRoles, v)
+	--[[elseif (v.type == "department" and self.isInSubMainGroup and g.player:IsInGroup(v.groupID)) or (v.type == "secondmain" and g.player:IsInGroup(g.stats.arbs.SubmainGroupID) and g.player:GetRankInGroup(g.stats.arbs.SubmainGroupID) >= v.rankID) or v.type == "default" or isplayerstaff == true then
+			table.insert(self.availableRoles, v)]]	
+		elseif (v.type == "Smain" and g.player:IsInGroup() and g.player:GetRankInGroup() >= v.rankID) or  isplayerstaff == true then
+			table.insert(self.availableRoles, v)
+
+
+
+		end
+	end
+end
+
+function role:assignRole(roleName)
+	if type(g.misc.request) == "function" then
+		local success, result = pcall(function()
+			return g.misc.request("setPlayerRole", roleName)
+		end)
+
+		if success then
+			local roleStats = g.stats.roles[roleName]
+			self.name = roleStats.name
+			return true
+		else
+			print("Error calling g.misc.request:", result)
+		end
+	else
+		print("Error: g.misc.request is not a function or is nil")
+	end
+end
+
+
+
+return role
