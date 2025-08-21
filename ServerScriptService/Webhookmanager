@@ -1,0 +1,45 @@
+local WebhookManager = {}
+
+local HttpService = game:GetService("HttpService")
+local MaxRequests = 4
+local RateLimitDuration = 8
+
+local TotalRequestsMade = 0
+local RequestsMade = 0
+local LastRequestTimeStamp = os.time()
+
+function WebhookManager.PostWebhookMessage(contentData)
+	if os.time() - LastRequestTimeStamp > RateLimitDuration then
+		LastRequestTimeStamp = os.time()
+		TotalRequestsMade = 0
+		RequestsMade = 0
+	end
+
+	if RequestsMade >= MaxRequests then
+		print("Webhook has reached its limit.")
+		return
+	end
+
+	local WebhookContentData = {
+		["content"] = "",
+		["embeds"] = {{
+			["title"] = contentData.title,
+			["description"] = contentData.description,
+			["color"] = contentData.embedcolor,
+		}}
+	}
+
+	local WebhookencodedData = HttpService:JSONEncode(WebhookContentData)
+	local success, returneddata
+
+	success, returneddata = pcall(function()
+		HttpService:PostAsync(contentData.webhookurl,WebhookencodedData,Enum.HttpContentType.ApplicationJson)
+	end)
+
+	
+	LastRequestTimeStamp = os.time()
+	TotalRequestsMade = TotalRequestsMade + 1
+	RequestsMade = RequestsMade + 1
+end
+
+return WebhookManager
