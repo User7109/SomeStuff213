@@ -1,0 +1,11 @@
+local mod = require(script.FlagHandler)
+
+local flagfolder = workspace:WaitForChild("Flags")
+
+for i,v in flagfolder:GetChildren() do
+	if v:IsA("Model") and v.Name == "Flag" then
+		task.spawn(function()
+			mod.new(v)
+		end)
+	end
+end
