@@ -1,0 +1,16 @@
+local module = {}
+
+module.soundFromClient = function(id, vol, pitch)
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://" .. id	
+	sound.Parent = workspace
+	sound.Volume = vol
+	sound.PlaybackSpeed = pitch
+	sound:Play()
+	
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+end
+
+return module
