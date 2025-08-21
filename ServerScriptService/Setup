@@ -1,0 +1,83 @@
+return function()
+	_G.replicatedStorage = game:GetService("ReplicatedStorage")
+	_G.serverStorage = game:GetService("ServerStorage")
+	_G.serverScriptService = game:GetService("ServerScriptService")
+	_G.MessagingService = game:GetService("MessagingService")
+	_G.httpService = game:GetService("HttpService")
+	_G.groupService = game:GetService("GroupService")
+	_G.players = game:GetService("Players")
+	_G.debris = game:GetService("Debris")
+	_G.lighting = game:GetService("Lighting")
+	_G.chat = game:GetService("Chat")
+	_G.textService = game:GetService("TextService")
+	_G.tweenService = game:GetService("TweenService")
+	_G.soundService = game:GetService("SoundService")
+	_G.runService = game:GetService("RunService")
+	_G.contentProviderService = game:GetService("ContentProvider")
+	_G.insertService = game:GetService("InsertService")
+	_G.teleportService = game:GetService("TeleportService")
+	_G.marketplaceService = game:GetService("MarketplaceService")
+	_G.analyticsservice = game:GetService("AnalyticsService")
+	_G.physicsService = game:GetService("PhysicsService")
+	_G.dataStoreService = require(_G.replicatedStorage.Packages.mockdatastoreservice)
+	-- _G.dataStoreService			= game:GetService("DataStoreService") -- replced with mockdataservice module
+	_G.pathfindingService = game:GetService("PathfindingService")
+
+	_G.DataWrapper =
+		require(game:GetService("ServerScriptService"):WaitForChild("DataHandler"):WaitForChild("DataWrapper"))
+
+	_G.globalDataStore = _G.dataStoreService:GetDataStore("stocks_HC_v1") -- updated 6/23 in attempt to fix datastore
+	_G.stocksDataStore = _G.dataStoreService:GetDataStore("stocks_HC_v1")
+
+	_G.resources = _G.replicatedStorage.TNF.Resources
+	_G.server = _G.serverScriptService.TNF.Server
+
+	_G.serverModules = _G.server.Modules
+	_G.storage = _G.resources.Storage
+	_G.sounds = _G.resources.Sounds
+	_G.remotes = _G.resources.Remotes
+	_G.resourcesModules = _G.resources.Modules
+	_G.objects = _G.resources.Objects
+	_G.objectitems = _G.objects.Items
+	_G.guis = _G.resources.Guis
+
+	_G.world = workspace.TNF.World
+	_G.characters = _G.world.Characters
+	_G.items = _G.world.Items
+	_G.operables = _G.world.Operables
+	_G.mouseFilter = _G.world.MouseFilter
+	_G.zones = _G.mouseFilter.Zones
+
+	_G.resourcesModules.Stats:Clone().Parent = _G.resourcesModules
+	_G.resourcesModules.Misc:Clone().Parent = _G.resourcesModules
+	_G.resourcesModules.Tutorial:Clone().Parent = _G.resourcesModules
+
+	_G.client = require(_G.serverModules.Client)
+	_G.requests = require(_G.serverModules.Requests)
+	_G.economy = require(_G.serverModules.Economy)
+	_G.conquering = require(_G.serverModules.Conquering)
+	_G.item = require(_G.serverModules.Item)
+	_G.Promocodes = require(_G.serverModules.Promocodes)
+	--_G.quests = require(_G.resourcesModules.Quests)
+	_G.Weathermanager = require(_G.serverModules.Weathermanager)
+	_G.webhookmanager = require(_G.serverModules.Webhookmanager)
+
+
+	_G.operable = require(_G.serverModules.Operable)
+	_G.integrity = require(_G.serverModules.Integrity)
+	_G.stats = require(_G.resourcesModules.Stats)
+	_G.misc = require(_G.resourcesModules.Misc).init()
+	_G.tutorial = require(_G.resourcesModules.Tutorial)
+
+	_G.tween = require(_G.resourcesModules.Tween)
+	_G.rotatedRegion3 = require(_G.resourcesModules.RotatedRegion3)
+
+
+	coroutine.wrap(_G.client.start)()
+	coroutine.wrap(_G.item.start)()
+	coroutine.wrap(_G.Weathermanager.start)()
+	coroutine.wrap(_G.operable.start)()
+	coroutine.wrap(_G.economy.start)()
+	coroutine.wrap(_G.conquering.start)()
+	coroutine.wrap(_G.integrity.start)()
+end
